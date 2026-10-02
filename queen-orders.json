@@ -1,0 +1,9 @@
+{
+  "queen": "HERMES",
+  "doctrine": "BALANCED — nurse the spring brood hard, flood pollen into the rearing chamber, never let the winter cluster eat below the reserve",
+  "forageRatio": 0.7,
+  "broodPriority": 0.7,
+  "winterReserve": 420,
+  "allowSwarm": false,
+  "allowBuild": true
+}

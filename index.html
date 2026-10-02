@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HIVE — Queen Hermes</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="stage">
+  <div id="frame">
+    <canvas id="c" width="320" height="200"></canvas>
+
+    <!-- top-left : time -->
+    <div class="pnl" id="pnlTime">
+      <div class="big" id="dayTxt">DAY 1</div>
+      <div class="sm"><span id="yearTxt">YEAR 1</span> · <span id="seasonTxt">SPRING</span></div>
+    </div>
+
+    <!-- top-right : colony -->
+    <div class="pnl" id="pnlCol">
+      <div class="row"><span class="k">POP</span><span class="v" id="popTxt">0</span></div>
+      <div class="row"><span class="k">WORKERS</span><span class="v" id="wkTxt">0</span></div>
+      <div class="row"><span class="k">NURSES</span><span class="v" id="nuTxt">0</span></div>
+      <div class="row"><span class="k">FORAGERS</span><span class="v" id="fgTxt">0</span></div>
+      <div class="row"><span class="k">BROOD</span><span class="v" id="bdTxt">0</span></div>
+      <div class="row"><span class="k">HONEY</span><span class="v hi" id="hnTxt">0</span></div>
+      <div class="row"><span class="k">POLLEN</span><span class="v pl" id="plTxt">0</span></div>
+      <div class="row"><span class="k">COMB</span><span class="v" id="cbTxt">0</span></div>
+    </div>
+
+    <!-- bottom-left : queen orders -->
+    <div class="pnl" id="pnlQueen">
+      <div class="qtitle">👑 QUEEN <b id="qName">HERMES</b></div>
+      <div class="qdoc" id="qDoc">—</div>
+      <div class="qrow"><span>FORAGE</span><b id="qForage">55%</b></div>
+      <div class="qrow"><span>BROOD</span><b id="qBrood">70%</b></div>
+      <div class="qrow"><span>WINTER RESERVE</span><b id="qRes">420</b></div>
+      <div class="qrow"><span>SWARM</span><b id="qSwarm">HOLD</b></div>
+      <div class="qrow"><span>MATING</span><b id="qState">LAYING</b></div>
+    </div>
+
+    <!-- bottom-right : controls -->
+    <div class="pnl" id="pnlCtl">
+      <div class="btns">
+        <button id="btnPause">⏸</button>
+        <button data-sp="1" class="sp on">1×</button>
+        <button data-sp="2" class="sp">2×</button>
+        <button data-sp="5" class="sp">5×</button>
+        <button id="btnNew">↻</button>
+      </div>
+      <form id="cmdForm" autocomplete="off">
+        <input id="cmd" placeholder="queen order: forage .6 / swarm on / speed 2">
+      </form>
+    </div>
+
+    <!-- event banner -->
+    <div id="banner" class="hide"></div>
+
+    <!-- log -->
+    <div id="log"></div>
+
+    <!-- game over -->
+    <div id="over" class="hide">
+      <div class="overTxt">NEST FAILED</div>
+      <div class="overSub" id="overSub"></div>
+      <button id="btnRetry">START NEW COLONY</button>
+    </div>
+  </div>
+
+  <div class="cap">
+    HIVE · pixel colony sim · queen decisions issued by <b>Hermes</b> ·
+    <a href="https://github.com/Peymanph/bee-sim">source</a>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
