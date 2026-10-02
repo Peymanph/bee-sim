@@ -151,7 +151,7 @@ bark.width = IW; bark.height = IH;
 (function () {
   const g = bark.getContext('2d');
   const img = g.createImageData(IW, IH), d = img.data;
-  const pal = [[110, 82, 54], [94, 69, 46], [128, 98, 65], [78, 57, 38], [142, 112, 76], [101, 75, 50]];
+  const pal = [[133, 99, 66], [114, 84, 56], [155, 119, 79], [97, 71, 47], [172, 135, 92], [123, 91, 61]];
   for (let i = 0; i < d.length; i += 4) {
     let p = pal[(rnd() * pal.length) | 0];
     if (rnd() < 0.07) p = [58, 42, 28];
@@ -163,8 +163,8 @@ bark.width = IW; bark.height = IH;
   for (let x = 0; x < IW;) {
     const w = 1 + ((rnd() * 3) | 0);
     const y0 = (rnd() * IH) | 0, h = 40 + ((rnd() * 160) | 0);
-    g.fillStyle = 'rgba(46,32,20,0.45)'; g.fillRect(x, y0, w, h);
-    g.fillStyle = 'rgba(180,150,110,0.20)'; g.fillRect(x + w, y0 + 8, 1, h - 16);
+    g.fillStyle = 'rgba(58,40,25,0.34)'; g.fillRect(x, y0, w, h);
+    g.fillStyle = 'rgba(205,175,130,0.17)'; g.fillRect(x + w, y0 + 8, 1, h - 16);
     x += 5 + ((rnd() * 5) | 0);
   }
   // knots
