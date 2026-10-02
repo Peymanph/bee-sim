@@ -1,32 +1,39 @@
 'use strict';
 /* HIVE — pixel bee colony sim.
-   Strategic layer: Queen Hermes issues orders (queen-orders.json / command bar).
+   The hive lives in a hollow tree, not underground.
+   Queen Hermes issues orders (queen-orders.json / command bar).
    Biology: real worker caste by age, nurse-fed larvae, separate pollen (protein)
-   and honey (carbohydrate) stores, egg→larva→pupa timeline, emergency requeening. */
+   and honey (carbohydrate) stores, egg→larva→pupa timeline, emergency requeening.
+   Ecology: weather hazards (storm / drought / heatwave / hornets / frost / bear)
+   Personality: every bee is born bold, timid, diligent, frugal or social —
+   it changes how she flies, eats, works and survives a disaster. */
 
 // ---------- constants ----------
 const IW = 320, IH = 200;
-const GROUND = 64, T = 4;
-const COLS = IW / T, ROWS = IH / T, GROW = GROUND / T;
-const DRAIN = 0.35;                 // sim-days per real second at 1×
+const GROUND = 168, T = 4;                 // grass line / tile size
+const COLS = IW / T, ROWS = IH / T;
+const DRAIN = 0.35;                        // sim-days per real second at 1×
 
-const HPC = 12;                     // honey units held per comb cell
-const PPC = 6;                      // pollen units held per comb cell
+const HPC = 12;                            // honey units held per comb cell
+const PPC = 6;                             // pollen units held per comb cell
 
-const EGG_D = 2.0;                  // days as egg   (real ~3)
-const LARVA_D = 4.5;                // days as larva (real ~6)
-const PUPA_D = 7.0;                 // days as pupa  (real ~12)
-const QCELL_D = 10;                 // days to rear a replacement queen
+const EGG_D = 2.0;                         // days as egg   (real ~3)
+const LARVA_D = 4.5;                       // days as larva (real ~6)
+const PUPA_D = 7.0;                        // days as pupa  (real ~12)
+const QCELL_D = 10;                        // days to rear a replacement queen
 
-const NURSE_LO = 1, NURSE_HI = 12;  // ages that feed larvae
-const FORAGE_AGE = 17;              // only mature bees can fly out
-const LARVA_PER_NURSE = 6;          // larvae one nurse can keep fed
-const LARVA_POLLEN_D = 0.70;        // pollen / larva / day (protein)
-const LARVA_HONEY_D = 0.45;         // honey  / larva / day (energy)
-const STALL_MAX = 2.6;              // days unfed before a larva dies
+const NURSE_LO = 1, NURSE_HI = 12;         // ages that feed larvae
+const FORAGE_AGE = 17;                     // only mature bees can fly out
+const LARVA_PER_NURSE = 6;                 // larvae one nurse can keep fed
+const LARVA_POLLEN_D = 0.70;               // pollen / larva / day (protein)
+const LARVA_HONEY_D = 0.45;                // honey  / larva / day (energy)
+const STALL_MAX = 2.6;                     // days unfed before a larva dies
 
-const FLOWERS = [8, 14, 6, 0];      // spring / summer / autumn / winter
-const YIELD = [1, 1.35, 0.6, 0];
+// seasons are now EQUAL: every season blooms, every season rears brood.
+// winter is only harder because of frost storms, not because it is empty.
+const FLOWERS = [8, 14, 8, 8];             // spring / summer / autumn / winter
+const YIELD = [1, 1.35, 0.8, 1.0];
+const LAYRATE = [2.4, 3.4, 1.3, 2.0];
 const SEASON = ['SPRING', 'SUMMER FLOW', 'AUTUMN', 'WINTER'];
 
 const cv = document.getElementById('c');
@@ -49,26 +56,50 @@ let ORDERS = {
   allowBuild: true
 };
 
-// ---------- hive geometry ----------
-const ENT = { x: 40 * T + 2, y: GROUND };
-const HIVE = { x: 40 * T + 2, y: 112 };
+// ---------- tree / hive geometry ----------
+const HIVE = { x: 160, y: 112 };
+const ENT = { x: 233, y: 140 };            // hole through the bark
+const POKE = { x: 176, y: 140 };           // last point inside the hollow
+const OUT = { x: 246, y: 140 };            // clear air just outside the trunk
+
+// trunk tapers from a wide base to a narrow crown
+function trunkHW(y) {
+  if (y > GROUND + 8) return 0;
+  const t = (GROUND - y) / (GROUND - 24);   // 0 at base, 1 at crown
+  return Math.round(74 - 30 * Math.max(0, t));
+}
+function inTrunkPx(x, y) {
+  if (y < 24 || y > GROUND + 4) return false;
+  return Math.abs(x - 160) <= trunkHW(y);
+}
 
 // ---------- world state ----------
 const S = {
   day: 1, year: 1, season: 0,
   speed: 1, paused: false, over: false,
-  honey: 45, pollen: 8,
+  honey: 70, pollen: 8,
   workers: [], drones: [], comb: [], flowers: [],
   queenAlive: true, queenCell: null,
-  queenT: 0, slotIdx: 0, dirty: true,
+  queenT: 0, slotIdx: 0, free: [], dirty: true,
   layT: 0, buildT: 0, starveT: 0, roleT: 0, miteYear: -1, swarmT: 0,
+  haz: null, hazCd: 24,
   banner: null, bannerT: 0, logs: [], frame: 0
 };
 
-// ---------- tile grid ----------
+// ---------- tile grid: 1 = material (wood or dirt), 0 = void ----------
 const solid = new Uint8Array(COLS * ROWS);
-function air(cx, cy) { return cx >= 0 && cx < COLS && cy >= GROW && cy < ROWS && solid[cy * COLS + cx] === 0; }
-function cut(cx, cy) { if (cx >= 0 && cx < COLS && cy >= GROW && cy < ROWS) { if (solid[cy * COLS + cx]) { solid[cy * COLS + cx] = 0; S.dirty = true; } } }
+function isWood(cx, cy) {
+  if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS) return false;
+  const px = cx * T + 2, py = cy * T + 2;
+  return py >= GROUND ? true : inTrunkPx(px, py);
+}
+function air(cx, cy) { return cx >= 0 && cx < COLS && cy >= 0 && cy < ROWS && solid[cy * COLS + cx] === 0; }
+function hollow(cx, cy) { return isWood(cx, cy) && !air(cx, cy) && (cy * T + 2) < GROUND; }
+function cut(cx, cy) {
+  if (!isWood(cx, cy)) return;
+  const i = cy * COLS + cx;
+  if (solid[i]) { solid[i] = 0; S.dirty = true; }
+}
 function disc(px, py, r) {
   const cx = px / T, cy = py / T, rt = r / T + 0.4;
   for (let y = Math.floor(cy - rt); y <= cy + rt; y++)
@@ -77,29 +108,73 @@ function disc(px, py, r) {
       if (dx * dx + dy * dy <= rt * rt) cut(x, y);
     }
 }
-function carveShaft() { for (let y = GROW; y <= 27; y++) cut(40, y); }
+function slotRect(x1, y1, x2, y2) {
+  for (let y = y1; y <= y2; y += T) for (let x = x1; x <= x2; x += T) cut(x / T | 0, y / T | 0);
+}
 
 // comb slots — outward spiral from the hive centre
 const SLOTS = (function () {
-  const a = [], n = 15, c = n;
+  const a = [], n = 12, c = n;
   for (let dy = -n; dy <= n; dy++) for (let dx = -n; dx <= n; dx++)
     a.push({ dx, dy, r: Math.hypot(dx, dy) });
   a.sort((p, q) => p.r - q.r);
   return a;
 })();
-
+function slotPos(i) {
+  const s = SLOTS[i];
+  return { x: HIVE.x + s.dx * 7 + (Math.abs(s.dy) % 2 ? 3 : 0), y: HIVE.y + s.dy * 6 };
+}
+function fits(x, y) {
+  if (y < 44 || y > 166) return false;
+  return Math.abs(x - 160) <= trunkHW(y) - 16;   // 16px of bark stays intact
+}
 function addComb() {
-  if (S.slotIdx >= SLOTS.length) return false;
-  const s = SLOTS[S.slotIdx++];
-  const x = HIVE.x + s.dx * 7 + (Math.abs(s.dy) % 2 ? 3 : 0);
-  const y = HIVE.y + s.dy * 6;
-  if (y < GROUND + 10 || y > IH - 6) return addComb();
-  disc(x, y, 4.6);
-  S.comb.push({ x, y, kind: null, t: 0, stall: 0 });
-  return true;
+  for (let guard = 0; guard < 900; guard++) {
+    let i;
+    if (S.free.length) i = S.free.pop();
+    else if (S.slotIdx < SLOTS.length) i = S.slotIdx++;
+    else return false;
+    const p = slotPos(i);
+    if (fits(p.x, p.y)) {
+      disc(p.x, p.y, 4.6);
+      S.comb.push({ x: p.x, y: p.y, kind: null, t: 0, stall: 0, slot: i });
+      return true;
+    }
+  }
+  return false;
 }
 
-// ---------- soil texture ----------
+// ---------- textures ----------
+// bark: vertical grain + cracks
+const bark = document.createElement('canvas');
+bark.width = IW; bark.height = IH;
+(function () {
+  const g = bark.getContext('2d');
+  const img = g.createImageData(IW, IH), d = img.data;
+  const pal = [[110, 82, 54], [94, 69, 46], [128, 98, 65], [78, 57, 38], [142, 112, 76], [101, 75, 50]];
+  for (let i = 0; i < d.length; i += 4) {
+    let p = pal[(rnd() * pal.length) | 0];
+    if (rnd() < 0.07) p = [58, 42, 28];
+    if (rnd() < 0.05) p = [166, 134, 94];
+    d[i] = p[0]; d[i + 1] = p[1]; d[i + 2] = p[2]; d[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  // vertical bark furrows
+  for (let x = 0; x < IW;) {
+    const w = 1 + ((rnd() * 3) | 0);
+    const y0 = (rnd() * IH) | 0, h = 40 + ((rnd() * 160) | 0);
+    g.fillStyle = 'rgba(46,32,20,0.45)'; g.fillRect(x, y0, w, h);
+    g.fillStyle = 'rgba(180,150,110,0.20)'; g.fillRect(x + w, y0 + 8, 1, h - 16);
+    x += 5 + ((rnd() * 5) | 0);
+  }
+  // knots
+  for (let i = 0; i < 7; i++) {
+    const x = 100 + ((rnd() * 120) | 0), y = 40 + ((rnd() * 120) | 0);
+    g.fillStyle = 'rgba(52,36,22,.7)'; g.beginPath(); g.ellipse(x, y, 5, 7, 0, 0, 7); g.fill();
+  }
+})();
+
+// soil band under the grass
 const soil = document.createElement('canvas');
 soil.width = IW; soil.height = IH - GROUND;
 (function () {
@@ -109,68 +184,172 @@ soil.width = IW; soil.height = IH - GROUND;
   for (let i = 0; i < d.length; i += 4) {
     let p = pal[(rnd() * pal.length) | 0];
     if (rnd() < 0.09) p = [98, 76, 52];
-    if (rnd() < 0.06) p = [238, 222, 188];
     d[i] = p[0]; d[i + 1] = p[1]; d[i + 2] = p[2]; d[i + 3] = 255;
   }
   g.putImageData(img, 0, 0);
-  // geological strata
-  for (let y = 10; y < soil.height; y += 26) {
-    g.fillStyle = 'rgba(84,63,42,0.46)'; g.fillRect(0, y, soil.width, 3);
-    g.fillStyle = 'rgba(245,230,200,0.38)'; g.fillRect(0, y + 3, soil.width, 1);
-  }
-  // scattered stones
-  for (let i = 0; i < 190; i++) {
-    const x = (rnd() * soil.width) | 0, y = (rnd() * soil.height) | 0, w = 2 + ((rnd() * 4) | 0);
-    g.fillStyle = rnd() < 0.5 ? 'rgba(126,104,76,0.95)' : 'rgba(240,224,192,0.92)';
-    g.fillRect(x, y, w, w > 3 ? 3 : 2);
+  for (let y = 6; y < soil.height; y += 13) {
+    g.fillStyle = 'rgba(84,63,42,0.4)'; g.fillRect(0, y, soil.width, 2);
   }
 })();
 
-// ---------- tunnel layer (soil + grass + carved voids) ----------
+// static scenery: soil + grass + trunk + canopy (drawn once)
+const base = document.createElement('canvas');
+base.width = IW; base.height = IH;
+function buildBase() {
+  const g = base.getContext('2d');
+  g.clearRect(0, 0, IW, IH);
+  g.drawImage(soil, 0, GROUND);
+  // grass band
+  g.fillStyle = '#4f8f3a'; g.fillRect(0, GROUND, IW, 4);
+  g.fillStyle = '#3f7a30'; g.fillRect(0, GROUND + 4, IW, 3);
+  g.fillStyle = '#7cba5e';
+  for (let x = 0; x < IW; x += 3) if (rnd() < 0.7) g.fillRect(x, GROUND - 2, 1, 3);
+
+  // --- trunk silhouette, clipped bark texture ---
+  g.save();
+  g.beginPath();
+  const yTop = 24, yBot = GROUND + 7;
+  for (let y = yBot; y >= yTop; y -= 4) g.lineTo(160 - trunkHW(y), y);
+  g.lineTo(160 - trunkHW(yTop), yTop);
+  g.lineTo(160 + trunkHW(yTop), yTop);
+  for (let y = yTop; y <= yBot; y += 4) g.lineTo(160 + trunkHW(y), y);
+  g.closePath();
+  g.clip();
+  g.drawImage(bark, 0, 0);
+  g.restore();
+  // silhouette edge — the trunk must read against the sky
+  g.strokeStyle = 'rgba(34,22,12,.92)'; g.lineWidth = 2;
+  g.beginPath();
+  for (let y = yBot; y >= yTop; y -= 4) g.lineTo(160 - trunkHW(y), y);
+  g.lineTo(160 - trunkHW(yTop), yTop);
+  g.lineTo(160 + trunkHW(yTop), yTop);
+  for (let y = yTop; y <= yBot; y += 4) g.lineTo(160 + trunkHW(y), y);
+  g.closePath(); g.stroke();
+
+  // roots flaring over the grass
+  g.save();
+  g.fillStyle = '#5d452c';
+  g.beginPath();
+  g.moveTo(86, GROUND + 7); g.lineTo(100, GROUND - 4); g.lineTo(116, GROUND + 7); g.closePath(); g.fill();
+  g.beginPath();
+  g.moveTo(204, GROUND + 7); g.lineTo(220, GROUND - 5); g.lineTo(236, GROUND + 7); g.closePath(); g.fill();
+  g.restore();
+
+  // --- branches ---
+  g.strokeStyle = '#4d3925'; g.lineWidth = 3; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(140, 44); g.lineTo(96, 34); g.lineTo(66, 44); g.stroke();
+  g.beginPath(); g.moveTo(182, 42); g.lineTo(226, 32); g.lineTo(256, 44); g.stroke();
+  g.beginPath(); g.moveTo(160, 34); g.lineTo(160, 16); g.stroke();
+
+  // --- canopy: pixel leaves on a 4px grid ---
+  const blobs = [[104, 36, 40], [160, 24, 48], [216, 36, 40], [68, 54, 28], [252, 54, 28], [128, 14, 34], [194, 14, 34]];
+  for (let cy = -4; cy < 78; cy += 4) for (let cx = 0; cx < IW; cx += 4) {
+    const px = cx + 2, py = cy + 2;
+    let inside = 0;
+    for (const b of blobs) { const dx = px - b[0], dy = (py - b[1]) * 1.12; if (dx * dx + dy * dy <= b[2] * b[2]) { inside = 1; break; } }
+    if (!inside) continue;
+    const r = rnd();
+    let col;
+    if (py > 56) col = r < 0.75 ? '#1d4a24' : '#25562a';
+    else if (py > 34) col = r < 0.7 ? '#2f6b31' : (r < 0.9 ? '#25562a' : '#43893c');
+    else col = r < 0.55 ? '#43893c' : (r < 0.85 ? '#2f6b31' : '#5aa648');
+    g.fillStyle = col; g.fillRect(cx, cy, 4, 4);
+  }
+  // leaf rim highlights
+  g.fillStyle = 'rgba(120,190,96,.5)';
+  for (let i = 0; i < 40; i++) { const x = (rnd() * IW) | 0, y = (rnd() * 40) | 0; g.fillRect(x, y, 2, 2); }
+}
+
+// dynamic layer = base + the carved hollow
 const tun = document.createElement('canvas');
 tun.width = IW; tun.height = IH;
 const tg = tun.getContext('2d');
 function buildTunnel() {
   tg.clearRect(0, 0, IW, IH);
-  tg.drawImage(soil, 0, GROUND);
-  // grass band
-  tg.fillStyle = '#69a84e'; tg.fillRect(0, GROUND, IW, 3);
-  tg.fillStyle = '#548f3f'; tg.fillRect(0, GROUND + 3, IW, 2);
-  tg.fillStyle = '#7cba5e';
-  for (let x = 0; x < IW; x += 3) if (rnd() < 0.6) tg.fillRect(x, GROUND - 1, 1, 2);
-  // voids
-  tg.fillStyle = '#3b2b1c';
-  for (let y = GROW; y < ROWS; y++) for (let x = 0; x < COLS; x++)
-    if (air(x, y)) tg.fillRect(x * T, y * T, T, T);
-  // dithered excavated-earth edge around the voids
-  tg.fillStyle = 'rgba(48,33,20,0.32)';
-  for (let y = GROW; y < ROWS; y++) for (let x = 0; x < COLS; x++)
-    if (!air(x, y) && (air(x + 1, y) || air(x - 1, y) || air(x, y + 1) || air(x, y - 1))
-      && ((x + y) & 1) === 0) tg.fillRect(x * T, y * T, T, T);
+  tg.drawImage(base, 0, 0);
+  tg.fillStyle = '#1b1108';
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
+    if (hollow(x, y)) tg.fillRect(x * T, y * T, T, T);
+  // solid dark rim — the cut edge has to read as a recess, not a decal
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
+    if (!hollow(x, y) && isWood(x, y) && y * T + 2 < GROUND &&
+      (hollow(x + 1, y) || hollow(x - 1, y) || hollow(x, y + 1) || hollow(x, y - 1))) {
+      tg.fillStyle = 'rgba(10,6,3,0.78)'; tg.fillRect(x * T, y * T, T, T);
+    }
+  // chewed dither just inside the rim
+  tg.fillStyle = 'rgba(48,30,16,0.5)';
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
+    if (hollow(x, y) &&
+      (!hollow(x + 1, y) || !hollow(x - 1, y) || !hollow(x, y + 1) || !hollow(x, y - 1)) &&
+      ((x + y) & 1) === 0) tg.fillRect(x * T, y * T, T, T);
   S.dirty = false;
+}
+
+// ---------- personalities ----------
+const PERSONAS = ['bold', 'timid', 'diligent', 'frugal', 'social'];
+const P_HEAD = { bold: '#ff8c1a', timid: '#7d7460', diligent: '#ffe14a', frugal: '#c9a12e', social: '#fff6d0' };
+const P_SPEED = { bold: 1.18, timid: 0.88, diligent: 1.0, frugal: 0.95, social: 1.0 };
+const JOB_COL = {
+  cleaner: '#fff3d6', nurse: '#ffe9a0', builder: '#e8d5a6',
+  tender: '#f0c040', forager: '#f6c515', guard: '#e0a010'
+};
+const JOB_NAME = ['cleaner', 'nurse', 'builder', 'tender', 'forager', 'guard'];
+
+function jobOf(b) {
+  if (b.role === 'guard') return 'guard';
+  if (b.role === 'forage') return 'forager';
+  if (b.age < 1) return 'cleaner';
+  if (b.age <= NURSE_HI) return 'nurse';
+  if (b.age <= 16) return 'builder';
+  return 'tender';
 }
 
 // ---------- colony helpers ----------
 function spawnWorker(age) {
+  const persona = PERSONAS[(rnd() * PERSONAS.length) | 0];
   S.workers.push({
     x: HIVE.x + ri(-8, 8), y: HIVE.y + ri(-8, 8),
-    role: 'tend', phase: 'in', tx: HIVE.x, ty: HIVE.y,
+    role: 'tend', phase: 'in', path: [], tx: HIVE.x, ty: HIVE.y,
     load: 0, cargo: 'nectar', trip: 0, rt: 0,
     age: age || 0, life: S.season === 2 ? ri(95, 140) : ri(38, 58),
-    flap: ri(0, 9)
+    flap: ri(0, 9), persona: persona, gi: rnd() * 6.28, jx: 0, jy: 0
   });
 }
 function pop() { return (S.queenAlive ? 1 : 0) + S.workers.length + S.drones.length + countBrood(); }
 function countBrood() { let n = 0; for (const c of S.comb) if (c.kind && c.kind !== 'qcell') n++; return n; }
 function emptyCells() { let n = 0; for (const c of S.comb) if (!c.kind) n++; return n; }
 // Nurses are the young cohort — but autumn "winter bees" are long-lived and
-// stay in the rearing crew well past the normal window, which is exactly what
-// lets a colony start brood again in early spring after a broodless winter.
+// stay in the rearing crew well past the normal window.
 function isNurse(b) {
   return b.age >= NURSE_LO && (b.age <= NURSE_HI || b.age < b.life * 0.55);
 }
+// Behavioural plasticity. A real colony whose young cohort runs short does not
+// simply stop rearing — mature workers revert to feeding, exactly the reflex
+// that carries a hive through the spring gap after a broodless winter. Without
+// it, countNurses() hits zero once, the queen can never lay again, and the
+// colony just ages out even with a full honey house.
+function reverts() {
+  const young = countNurses();
+  if (young >= 2) return 0;
+  return Math.max(0, Math.min(S.workers.length - young, 3 - young));
+}
+function effectiveNurses() { return countNurses() + reverts(); }
+function larvaeCap() {
+  let soc = 0;
+  for (const b of S.workers) if (isNurse(b) && b.persona === 'social') soc++;
+  return effectiveNurses() * LARVA_PER_NURSE + soc * 2;
+}
+// frugal bees eat ~22% less — a colony of frugal foragers outlasts a famine
+function maintUnits() {
+  let n = S.queenAlive ? 1 : 0;
+  for (const b of S.workers) n += (b.persona === 'frugal') ? 0.78 : 1;
+  for (const d of S.drones) n += 1;
+  return n;
+}
 function countNurses() { let n = 0; for (const b of S.workers) if (isNurse(b)) n++; return n; }
 function countForagers() { let n = 0; for (const b of S.workers) if (b.role === 'forage') n++; return n; }
+function countGuards() { let n = 0; for (const b of S.workers) if (b.role === 'guard') n++; return n; }
+function countPersona(p) { let n = 0; for (const b of S.workers) if (b.persona === p) n++; return n; }
 function seasonOf(d) { return Math.floor((d - 1) / 30) % 4; }
 
 // comb cells are finite: honey and pollen compete for the free ones
@@ -180,22 +359,103 @@ function pollenCap() { const free = Math.max(0, emptyCells() - Math.ceil(S.honey
 function setBanner(t, hold) { S.banner = t; S.bannerT = hold || 3.4; }
 function log(t) { S.logs.unshift(t); if (S.logs.length > 5) S.logs.pop(); }
 
+// ---------- hazards ----------
+const HAZ = {
+  thunderstorm: { name: 'THUNDERSTORM', days: 1.6 },
+  drought: { name: 'DROUGHT', days: 9 },
+  heatwave: { name: 'HEATWAVE', days: 5 },
+  hornet: { name: 'HORNET RAID', days: 1.3 },
+  frost: { name: 'FROST STORM', days: 5 },
+  bear: { name: 'BEAR ATTACK', days: 0.6 }
+};
+
+// bold bees read weather and stay home; timid ones get caught outside
+function killBees(pct, favorBold, msg) {
+  const n = Math.max(1, Math.round(S.workers.length * pct));
+  let killed = 0, guard = 0;
+  while (killed < n && guard++ < 900 && S.workers.length > 1) {
+    const i = ri(0, S.workers.length - 1);
+    const b = S.workers[i];
+    const persona = b.persona;
+    if (favorBold && persona === 'bold' && rnd() < 0.6) continue;
+    if (favorBold && persona === 'diligent' && rnd() < 0.3) continue;
+    if (!favorBold && persona === 'timid' && rnd() < 0.5) continue;
+    if (b.role === 'guard' && rnd() < 0.45) continue;   // guards hold the line
+    S.workers.splice(i, 1); killed++;
+  }
+  if (msg) log(msg + ' · −' + killed + ' bees');
+  return killed;
+}
+function destroyComb(pct) {
+  const n = Math.round(S.comb.length * pct);
+  let gone = 0;
+  for (let i = 0; i < n && S.comb.length; i++) {
+    const j = ri(0, S.comb.length - 1);
+    const c = S.comb.splice(j, 1)[0];
+    S.free.push(c.slot);
+    if (S.queenCell === c) S.queenCell = null;
+    gone++;
+  }
+  if (gone) log('Comb torn open · ' + gone + ' cells destroyed');
+}
+function triggerHaz(k) {
+  if (S.haz || S.over) return;
+  const p = HAZ[k];
+  S.haz = { kind: k, name: p.name, days: p.days };
+  setBanner(p.name, 4.5);
+  if (k === 'thunderstorm') {
+    killBees(0.10, true, 'Gust front — foragers lost in the wind');
+  } else if (k === 'hornet') {
+    const g = countGuards();
+    const pct = Math.max(0.03, 0.17 - g * 0.03);
+    killBees(pct, true, g >= 3 ? 'Guards held the entrance (' + g + ' on watch)'
+      : 'Hornets broke through — not enough guards');
+  } else if (k === 'bear') {
+    killBees(0.22, false, 'A bear tore into the hollow');
+    destroyComb(0.45);
+  } else if (k === 'drought') {
+    log('Ground dried up — blossoms are giving nothing');
+  } else if (k === 'heatwave') {
+    log('Heatwave — workers fanning the hollow instead of foraging');
+  } else if (k === 'frost') {
+    log('Frost — colony clusters and burns stores to stay warm');
+  }
+}
+function rollHaz() {
+  const s = S.season, pool = [];
+  const add = (k, w) => { for (let i = 0; i < w; i++) pool.push(k); };
+  add('thunderstorm', (s === 0 || s === 1) ? 3 : 1);
+  add('drought', s === 1 ? 4 : (s === 0 ? 1 : 0));
+  add('heatwave', s === 1 ? 3 : (s === 2 ? 1 : 0));
+  add('hornet', s === 2 ? 4 : (s === 1 ? 2 : 1));
+  add('frost', s === 3 ? 5 : 0);
+  add('bear', 1);
+  if (!pool.length || rnd() > 0.55) return;
+  triggerHaz(pool[(rnd() * pool.length) | 0]);
+}
+
 // ---------- setup ----------
 function initHive() {
-  for (let i = 0; i < COLS * ROWS; i++) solid[i] = (i / COLS | 0) >= GROW ? 1 : 0;
+  for (let i = 0; i < COLS * ROWS; i++) {
+    const cx = i % COLS, cy = (i / COLS) | 0;
+    solid[i] = isWood(cx, cy) ? 1 : 0;
+  }
   S.day = 1; S.year = 1; S.season = 0; S.over = false;
-  S.honey = 45; S.pollen = 8;
+  S.honey = 70; S.pollen = 8;
   S.workers = []; S.drones = []; S.comb = []; S.flowers = [];
-  S.slotIdx = 0; S.queenAlive = true; S.queenCell = null; S.queenT = 0;
+  S.slotIdx = 0; S.free = []; S.queenAlive = true; S.queenCell = null; S.queenT = 0;
   S.layT = 0; S.buildT = 0; S.starveT = 0; S.roleT = 0; S.miteYear = -1;
   S.swarmT = 0; S.logs = []; S.banner = null; S.bannerT = 0;
-  carveShaft(); disc(HIVE.x, HIVE.y + 4, 7);
+  S.haz = null; S.hazCd = 24;
+  // the hollow a founding swarm moved into: a chamber low in the trunk
+  disc(HIVE.x, HIVE.y, 34);
+  slotRect(POKE.x - 8, 135, ENT.x + 4, 145);       // entrance fissure
+  disc(ENT.x, ENT.y, 8);                            // hole through the bark
   for (let i = 0; i < 6; i++) addComb();
-  // a prime swarm leaves with the old queen and mostly mature foragers
   const seedAges = [24, 27, 19, 22, 31, 17, 12, 8, 5, 3, 1, 0, 9, 6];
   for (let i = 0; i < seedAges.length; i++) spawnWorker(seedAges[i] + ri(0, 3));
   syncFlowers();
-  log('Swarm settles · 14 workers, 6 cells drawn');
+  log('Swarm settles in the hollow · 14 workers, 6 cells');
   document.getElementById('over').classList.add('hide');
 }
 
@@ -212,22 +472,48 @@ function step(b, tx, ty, sp, dtSec) {
   b.x += dx / d * mv; b.y += dy / d * mv;
   return d <= sp * dtSec + 1.2;
 }
+function setPath(b, pts) { b.path = pts.slice(); advance(b); }
+function advance(b) { b.tx = b.path[0]; b.ty = b.path[1]; b.path.splice(0, 2); }
+// follow a queue of waypoints; true only when the last one is reached
+function stepPath(b, sp, ds) {
+  const done = step(b, b.tx, b.ty, sp, ds);
+  if (!done) return false;
+  if (b.path.length >= 2) { advance(b); return false; }
+  return true;
+}
 function pickAirTarget(b) {
-  for (let i = 0; i < 40; i++) {
-    const cx = ri(2, COLS - 3), cy = ri(GROW + 1, ROWS - 2);
-    if (air(cx, cy)) { b.tx = cx * T + 2; b.ty = cy * T + 2; b.rt = 1 + rnd() * 2; return; }
+  for (let i = 0; i < 60; i++) {
+    const cx = ri(2, COLS - 3), cy = ri(1, ROWS - 2);
+    if (hollow(cx, cy)) { b.tx = cx * T + 2; b.ty = cy * T + 2; b.rt = 1 + rnd() * 2; return; }
   }
   b.tx = HIVE.x + ri(-10, 10); b.ty = HIVE.y + ri(-10, 10); b.rt = 1;
 }
+// each bee keeps her own lane through the entrance so the traffic spreads out
+function exitPath(b, dest) {
+  return [POKE.x, POKE.y, ENT.x, ENT.y, OUT.x + b.jx, OUT.y + b.jy, dest.x, dest.y];
+}
+function homePath(b) {
+  return [OUT.x + b.jx, OUT.y + b.jy, ENT.x, ENT.y, POKE.x, POKE.y, HIVE.x, HIVE.y];
+}
 function pickFlower(b) {
-  // foragers aim for a blossom that still has the thing they came for
-  let best = null, bd = 1e9;
-  for (const f of S.flowers) {
-    const ok = b.cargo === 'pollen' ? f.p > 1.5 : f.n > 1.5;
-    if (ok) { const d = Math.abs(f.x - b.x); if (d < bd) { bd = d; best = f; } }
+  b.jx = Math.sin(b.gi) * 7;
+  b.jy = Math.cos(b.gi) * 5;
+  let pool = S.flowers.filter(f => (b.cargo === 'pollen' ? f.p > 1.5 : f.n > 1.5));
+  if (!pool.length) {                 // blossom stripped of that resource — switch
+    b.cargo = b.cargo === 'pollen' ? 'nectar' : 'pollen';
+    pool = S.flowers.filter(f => (b.cargo === 'pollen' ? f.p > 1.5 : f.n > 1.5));
   }
-  if (best) { b.tx = best.x; b.ty = GROUND - 5; b.load = 0; b.f = best; b.phase = 'out'; }
-  else { b.tx = ENT.x; b.ty = GROUND; b.load = 0; b.f = null; b.phase = 'return'; }
+  let best = null;
+  if (pool.length) {
+    // everyone aiming at the single nearest blossom makes one clumped smear of
+    // traffic — take a random one from the reasonably-near set instead
+    let bd = 1e9;
+    for (const f of pool) bd = Math.min(bd, Math.abs(f.x - b.x));
+    const near = pool.filter(f => Math.abs(f.x - b.x) <= bd + 70);
+    best = near[(rnd() * near.length) | 0];
+  }
+  if (best) { b.f = best; b.phase = 'out'; b.load = 0; setPath(b, exitPath(b, { x: best.x, y: GROUND - 5 })); }
+  else { b.f = null; b.phase = 'return'; setPath(b, homePath(b)); }
 }
 // real foragers collect what the colony is short of, not a fixed ratio
 function pollenTarget() {
@@ -235,10 +521,15 @@ function pollenTarget() {
   return 30 + larvae * 2.5;
 }
 function nextTrip(b) {
-  // nectar always wins while the honey reserve is thin — pollen only once
-  // the carbohydrate store is safe, exactly how a colony triages its work
-  const honeyFloor = Math.max(60, ORDERS.winterReserve * 0.15);
-  b.cargo = (S.pollen < pollenTarget() && S.honey >= honeyFloor) ? 'pollen' : 'nectar';
+  // Foragers split the load by need: protein whenever the store is not yet
+  // topped up, nectar whenever honey is about to run out. Both gates are
+  // live at once so neither store can deadlock the other — a colony that
+  // only hauls nectar never breeds, one that only hauls pollen starves.
+  const wantPollen = S.pollen < pollenTarget();
+  const wantNectar = S.honey < Math.max(70, ORDERS.winterReserve * 0.17);
+  if (wantPollen && wantNectar) { b.trip++; b.cargo = (b.trip % 2) ? 'nectar' : 'pollen'; }
+  else b.cargo = wantPollen ? 'pollen' : 'nectar';
+  b.phase = 'out';
   pickFlower(b);
 }
 
@@ -248,15 +539,33 @@ function update(dt, ds) {
   if (seas !== S.season) { S.season = seas; onSeason(seas); }
   S.year = Math.floor((S.day - 1) / 120) + 1;
 
-  // --- flowers regrow nectar and pollen ---
-  if (seas !== 3) for (const f of S.flowers) { f.n = Math.min(12, f.n + dt * 8); f.p = Math.min(10, f.p + dt * 6); }
+  // ===================== HAZARDS =====================
+  if (S.haz) {
+    S.haz.days -= dt;
+    if (S.haz.days <= 0) { log(S.haz.name + ' has passed'); S.haz = null; S.hazCd = 16 + rnd() * 16; }
+  } else {
+    S.hazCd -= dt;
+    if (S.hazCd <= 0) { S.hazCd = 16 + rnd() * 16; rollHaz(); }
+  }
+  const kind = S.haz ? S.haz.kind : null;
+  const drought = kind === 'drought', heat = kind === 'heatwave', frost = kind === 'frost';
+  const stormy = kind === 'thunderstorm';
+
+  // --- flowers regrow (a drought stops them dead) ---
+  const regenN = drought ? 0.3 : 1, regenP = frost ? 0 : 1;
+  for (const f of S.flowers) {
+    f.n = Math.min(12, f.n + dt * 8 * regenN);
+    f.p = Math.min(10, f.p + dt * 6 * regenP);
+  }
   syncFlowers();
 
-  // --- adults run on honey (carbohydrate) ---
-  const need = pop() * (seas === 3 ? 0.12 : 0.10);
+  // --- adults run on honey (carbohydrate); fanning and shivering cost extra ---
+  const burn = (seas === 3 ? 0.12 : 0.10) * (heat ? 1.6 : frost ? 1.8 : 1);
+  const need = maintUnits() * burn;
   S.honey = Math.max(0, S.honey - need * dt);
 
-  const larvaeCap = countNurses() * LARVA_PER_NURSE;
+  const cap = larvaeCap();
+  const broodEat = heat ? 1.6 : 1;          // larvae need more water/food in heat
 
   // ===================== BROOD =====================
   let fed = 0;
@@ -267,10 +576,10 @@ function update(dt, ds) {
       if (c.t >= EGG_D) { c.kind = 'larva'; c.t = 0; c.stall = 0; }
     } else if (c.kind === 'larva') {
       // larvae are the only stage that eats — and they need pollen (protein)
-      if (fed < larvaeCap && S.pollen > 0.01 && S.honey > 0.01) {
+      if (fed < cap && S.pollen > 0.01 && S.honey > 0.01) {
         S.pollen = Math.max(0, S.pollen - LARVA_POLLEN_D * dt);
-        S.honey = Math.max(0, S.honey - LARVA_HONEY_D * dt);
-        c.t += dt; c.stall = 0; fed++;
+        S.honey = Math.max(0, S.honey - LARVA_HONEY_D * broodEat * dt);
+        c.t += dt * (heat ? 0.7 : 1); c.stall = 0; fed++;
         if (c.t >= LARVA_D) { c.kind = 'pupa'; c.t = 0; }
       } else {
         c.stall += dt;
@@ -286,7 +595,7 @@ function update(dt, ds) {
   // ===================== REQUEENING =====================
   if (!S.queenAlive && !S.queenCell) {
     const cand = S.comb.find(c => c.kind === 'larva' && c.t < 1.6);
-    if (cand && countNurses() >= 5 && S.honey > 25 && S.pollen > 8) {
+    if (cand && effectiveNurses() >= 5 && S.honey > 25 && S.pollen > 8) {
       cand.kind = 'qcell'; cand.t = 0; cand.stall = 0; S.queenCell = cand;
       setBanner('EMERGENCY QUEEN CELL', 4.5);
       log('Workers pick a young larva and flood it with royal jelly');
@@ -294,7 +603,7 @@ function update(dt, ds) {
   }
   if (S.queenCell) {
     const c = S.queenCell;
-    if (countNurses() >= 3 && S.honey > 0.01 && S.pollen > 0.01) {
+    if (effectiveNurses() >= 3 && S.honey > 0.01 && S.pollen > 0.01) {
       S.honey = Math.max(0, S.honey - 0.55 * dt);
       S.pollen = Math.max(0, S.pollen - 0.30 * dt);
       c.t += dt; c.stall = 0;
@@ -309,19 +618,21 @@ function update(dt, ds) {
   }
 
   // ===================== QUEEN LAYS =====================
-  const reserveGate = seas === 2 ? ORDERS.winterReserve * 0.6 : 0;
-  const targetBrood = Math.floor(S.workers.length * (0.6 + ORDERS.broodPriority));
-  const canLay = S.queenAlive && !S.queenCell && seas !== 3 &&
-    S.honey > Math.max(7, reserveGate) && S.pollen > 8 &&
-    S.workers.length > 0 && countNurses() >= 2;
+  // winter lays too — the colony stays equal to every other season,
+  // it just refuses to breed into a shrinking honey reserve.
+  const reserveGate = seas === 3 ? ORDERS.winterReserve * 0.30 : 0;
+  const targetBrood = Math.max(16, Math.floor(S.workers.length * (0.55 + ORDERS.broodPriority * 0.85)));
+  const canLay = S.queenAlive && !S.queenCell &&
+    S.honey > Math.max(18, reserveGate) && S.pollen > 6 &&
+    S.workers.length > 0 && effectiveNurses() >= 2;
   if (canLay) {
-    const rate = seas === 1 ? 3.4 : seas === 0 ? 2.4 : 1.3;
-    const cap = Math.min(emptyCells(), Math.max(0, targetBrood - countBrood()));
+    const rate = LAYRATE[seas];
+    const room = Math.min(emptyCells(), Math.max(0, targetBrood - countBrood()));
     S.layT -= dt;
     if (S.layT <= 0) {
-      if (cap > 0) {
+      if (room > 0) {
         const c = S.comb.find(x => !x.kind);
-        if (c) { c.kind = 'egg'; c.t = 0; c.stall = 0; S.honey = Math.max(0, S.honey - 3); }
+        if (c) { c.kind = 'egg'; c.t = 0; c.stall = 0; S.honey = Math.max(0, S.honey - 2); }
       }
       S.layT = 1 / rate;
     }
@@ -329,10 +640,10 @@ function update(dt, ds) {
 
   // ===================== BUILD COMB =====================
   if (ORDERS.allowBuild) {
-    const target = Math.min(SLOTS.length, Math.max(24, Math.floor(pop() * 1.5) + 18));
-    const floor = seas === 2 ? Math.max(45, ORDERS.winterReserve * 0.35) : 35;
+    const target = Math.min(SLOTS.length, Math.max(22, Math.floor(pop() * 1.3) + 14));
+    const floor = seas === 3 ? Math.max(35, ORDERS.winterReserve * 0.30) : 22;
     S.buildT -= dt;
-    if (S.comb.length < target && S.honey > floor && S.buildT <= 0) { addComb(); S.honey = Math.max(0, S.honey - 3); S.buildT = 0.16; }
+    if (S.comb.length < target && S.honey > floor && S.buildT <= 0) { addComb(); S.honey = Math.max(0, S.honey - 1); S.buildT = 0.28; }
   }
 
   // ===================== DRONES =====================
@@ -351,20 +662,26 @@ function update(dt, ds) {
     b.age += dt;
     if (b.age > b.life) { b.dead = true; continue; }
     b.flap = (b.flap + 1) % 10;
-    if (b.role === 'tend') {
+    const sp = (b.role === 'tend' ? 11 : 48) * (P_SPEED[b.persona] || 1) * (stormy ? 0.8 : 1);
+
+    if (b.role === 'guard') {
+      const gx = OUT.x - 8 + Math.sin(S.frame / 22 + b.gi) * 3;
+      const gy = OUT.y + Math.cos(S.frame / 18 + b.gi) * 4;
+      step(b, gx, gy, 9, ds);
+    } else if (b.role === 'tend') {
       b.rt -= dt;
       if (b.rt <= 0) pickAirTarget(b);
-      step(b, b.tx, b.ty, 11, ds);
+      step(b, b.tx, b.ty, sp, ds);
     } else {
-      if (b.phase === 'out') {
-        if (step(b, b.tx, b.ty, 30, ds)) {
+      // forager: walk the waypoint queue out through the fissure and back
+      if (stepPath(b, sp, ds)) {
+        if (b.phase === 'out') {
           const f = b.f;
           if (b.cargo === 'pollen') b.load = (f && f.p > 1.5) ? (f.p -= 6, Math.round(7 * YIELD[S.season])) : 1;
           else b.load = (f && f.n > 1.5) ? (f.n -= 6, Math.round(10 * YIELD[S.season])) : 2;
-          b.phase = 'return'; b.tx = ENT.x; b.ty = GROUND;
-        }
-      } else {
-        if (step(b, b.tx, b.ty, 30, ds)) {
+          b.phase = 'return';
+          setPath(b, homePath(b));
+        } else {
           if (b.cargo === 'pollen') S.pollen = Math.min(S.pollen + b.load, pollenCap());
           else S.honey = Math.min(S.honey + b.load, honeyCap());
           b.load = 0;
@@ -383,12 +700,12 @@ function update(dt, ds) {
   }
 
   // ===================== STARVATION =====================
-  if (S.honey <= 0 || S.pollen <= 0) {
+  if (S.honey <= 0) {
     S.starveT += dt;
     if (S.starveT > 0.16 && S.workers.length > 0) {
       S.starveT = 0;
       S.workers.splice(ri(0, S.workers.length - 1), 1);
-      if (S.logs[0] !== 'Stores empty — bees dying') log('Stores empty — bees dying');
+      if (S.logs[0] !== 'Honey store empty — bees dying') log('Honey store empty — bees dying');
     }
   } else S.starveT = 0;
 
@@ -417,18 +734,28 @@ function update(dt, ds) {
   }
 }
 
-// age polyethism: young bees work inside, only mature bees fly
+// age polyethism: young bees work inside, only mature bees fly.
+// bold bees volunteer as guards; timid ones refuse the gate.
 function assignRoles() {
   const eligible = S.workers.filter(b => b.age >= FORAGE_AGE).length;
-  const want = S.season === 3 ? 0
-    : Math.min(Math.round(eligible * ORDERS.forageRatio), S.flowers.length * 2);
-  let have = countForagers();
+  // a small colony cannot afford two bees standing on the porch
+  const wantG = S.haz && S.haz.kind === 'hornet' ? 5 : eligible >= 14 ? 2 : eligible >= 6 ? 1 : 0;
+  let haveG = countGuards();
   for (const b of S.workers) {
     const canFly = b.age >= FORAGE_AGE;
-    if (have < want && b.role !== 'forage' && canFly) { b.role = 'forage'; b.trip = 0; nextTrip(b); have++; }
-    else if ((have > want || !canFly) && b.role === 'forage') { b.role = 'tend'; b.load = 0; b.rt = 0; pickAirTarget(b); have--; }
+    if (haveG < wantG && b.role !== 'guard' && canFly && b.persona !== 'timid') { b.role = 'guard'; b.load = 0; haveG++; }
+    else if ((haveG > wantG || !canFly) && b.role === 'guard') { b.role = 'tend'; b.rt = 0; pickAirTarget(b); haveG--; }
+  }
+  const want = Math.min(Math.round(eligible * ORDERS.forageRatio) - haveG, S.flowers.length * 3);
+  let have = countForagers();
+  for (const b of S.workers) {
+    const canFly = b.age >= FORAGE_AGE && b.role !== 'guard';
+    const stormShy = stormActive() && b.persona === 'timid';
+    if (have < want && b.role !== 'forage' && canFly && !stormShy) { b.role = 'forage'; b.trip = 0; nextTrip(b); have++; }
+    else if ((have > want || !canFly || stormShy) && b.role === 'forage') { b.role = 'tend'; b.load = 0; b.rt = 0; pickAirTarget(b); have--; }
   }
 }
+function stormActive() { return S.haz && (S.haz.kind === 'thunderstorm' || S.haz.kind === 'frost'); }
 
 function onSeason(s) {
   setBanner(SEASON[s], 3.4);
@@ -445,37 +772,63 @@ function onSeason(s) {
     }
   }
   if (s === 3) {
-    log('Winter cluster — ' + Math.floor(S.honey) + ' honey, ' + Math.floor(S.pollen) + ' pollen');
+    log('Winter — brood continues, frost storms may hit');
     if (S.honey < ORDERS.winterReserve) log('⚠ reserve target missed: ' + ORDERS.winterReserve);
   }
+  S.hazCd = Math.min(S.hazCd, 10 + rnd() * 10);
 }
 
 function fail(msg) { S.over = true; setBanner('NEST FAILED', 999); document.getElementById('overSub').textContent = msg; document.getElementById('over').classList.remove('hide'); }
 
 // ---------- render ----------
-const clouds = [[30, 16], [140, 24], [250, 14], [190, 34]].map(c => ({ x: c[0], y: c[1], w: 26 + (c[0] % 17) }));
+const clouds = [[30, 84], [140, 96], [250, 78], [190, 104]].map(c => ({ x: c[0], y: c[1], w: 26 + (c[0] % 17) }));
 function render() {
   S.frame++;
+  // sky sits behind everything, up to the grass line
   const g = ctx.createLinearGradient(0, 0, 0, GROUND);
   g.addColorStop(0, '#8fc7ea'); g.addColorStop(1, '#c6e4f7');
   ctx.fillStyle = g; ctx.fillRect(0, 0, IW, GROUND);
-  ctx.fillStyle = '#ffe98a'; ctx.beginPath(); ctx.arc(286, 18, 11, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffe98a'; ctx.beginPath(); ctx.arc(286, 96, 11, 0, 7); ctx.fill();
   ctx.fillStyle = 'rgba(255,255,255,.9)';
   for (const c of clouds) {
     const x = (c.x + S.frame * 0.04) % (IW + 60) - 30;
     ctx.fillRect(x, c.y, c.w, 5); ctx.fillRect(x + 5, c.y - 4, c.w - 12, 5);
   }
+
+  // weather tint
+  if (S.haz) {
+    const k = S.haz.kind;
+    if (k === 'thunderstorm') ctx.fillStyle = 'rgba(40,54,74,.30)';
+    else if (k === 'drought') ctx.fillStyle = 'rgba(224,170,70,.22)';
+    else if (k === 'heatwave') ctx.fillStyle = 'rgba(255,120,60,.18)';
+    else if (k === 'frost') ctx.fillStyle = 'rgba(180,214,255,.30)';
+    else if (k === 'bear') ctx.fillStyle = 'rgba(120,40,40,.35)';
+    else if (k === 'hornet') ctx.fillStyle = 'rgba(150,90,20,.22)';
+    if (S.haz.kind === 'frost' && S.frame % 3 === 0) ctx.fillStyle = 'rgba(255,255,255,.7)';
+    if (S.haz.kind === 'thunderstorm' && S.frame % 9 === 0) ctx.fillStyle = 'rgba(255,255,180,.65)';
+    if (k === 'frost' || k === 'thunderstorm') {
+      ctx.fillRect(0, 0, IW, GROUND);
+      // falling snow / rain
+      ctx.fillStyle = k === 'frost' ? 'rgba(255,255,255,.85)' : 'rgba(190,214,240,.75)';
+      for (let i = 0; i < 70; i++) {
+        const sx = (i * 47 + S.frame * (k === 'frost' ? 1 : 3)) % IW;
+        const sy = (i * 29 + S.frame * (k === 'frost' ? 2 : 6)) % GROUND;
+        ctx.fillRect(sx, sy, 1, k === 'frost' ? 1 : 2);
+      }
+    } else ctx.fillRect(0, 0, IW, GROUND);
+  }
+
   if (S.dirty) buildTunnel();
   ctx.drawImage(tun, 0, 0);
 
-  // flowers
+  // flowers on the grass
   const pet = ['#ff7fb0', '#ffd24a', '#c79bff', '#ff9d5c', '#7fe0ff'];
   for (const f of S.flowers) {
     const x = Math.round(f.x);
-    ctx.fillStyle = '#3f7a34'; ctx.fillRect(x, GROUND - 5, 1, 6);
+    ctx.fillStyle = '#3f7a34'; ctx.fillRect(x, GROUND - 6, 1, 7);
     ctx.fillStyle = pet[f.i];
-    ctx.fillRect(x - 1, GROUND - 7, 3, 2); ctx.fillRect(x, GROUND - 8, 1, 4);
-    if (f.n < 3 && f.p < 3) { ctx.fillStyle = 'rgba(120,140,110,.5)'; ctx.fillRect(x - 1, GROUND - 7, 3, 2); }
+    ctx.fillRect(x - 1, GROUND - 8, 3, 2); ctx.fillRect(x, GROUND - 9, 1, 4);
+    if (f.n < 3 && f.p < 3) { ctx.fillStyle = 'rgba(120,140,110,.5)'; ctx.fillRect(x - 1, GROUND - 8, 3, 2); }
   }
 
   // comb — honey and pollen compete for the free cells
@@ -499,14 +852,8 @@ function render() {
   // drones
   for (const d of S.drones) { ctx.fillStyle = '#5a4530'; ctx.fillRect(Math.round(d.x) - 1, Math.round(d.y) - 1, 3, 3); }
 
-  // workers
-  for (const b of S.workers) {
-    const x = Math.round(b.x), y = Math.round(b.y);
-    if (b.flap < 5) { ctx.fillStyle = '#e9f7ff'; ctx.fillRect(x - 1, y - 2, 1, 1); ctx.fillRect(x + 1, y - 2, 1, 1); }
-    ctx.fillStyle = '#f6c515'; ctx.fillRect(x - 1, y - 1, 3, 3);
-    ctx.fillStyle = '#221a0d'; ctx.fillRect(x, y - 1, 1, 3); ctx.fillRect(x + 1, y, 1, 1);
-    if (b.load > 0) { ctx.fillStyle = b.cargo === 'pollen' ? '#e8963c' : '#ffd76a'; ctx.fillRect(x + 1, y + 1, 2, 2); }
-  }
+  // workers — coloured by JOB, accented by PERSONALITY
+  for (const b of S.workers) drawBee(b);
 
   // queen
   if (S.queenAlive) {
@@ -517,6 +864,29 @@ function render() {
     ctx.fillStyle = '#ffe066'; ctx.fillRect(bx - 1, by - 4, 3, 1);
   }
 }
+
+function drawBee(b) {
+  const x = Math.round(b.x), y = Math.round(b.y);
+  const job = jobOf(b);
+  const body = JOB_COL[job];
+  const small = b.persona === 'frugal';
+  const w = small ? 2 : 3, h = small ? 2 : 3;
+  const indoor = job === 'cleaner' || job === 'nurse' || job === 'builder' || job === 'tender';
+  // wings: foragers and guards beat hard, nest bees idle
+  const flick = indoor ? b.flap < 3 : b.flap < 5;
+  if (flick) { ctx.fillStyle = '#e9f7ff'; ctx.fillRect(x - 1, y - 2, 1, 1); ctx.fillRect(x + 1, y - 2, 1, 1); }
+  ctx.fillStyle = body; ctx.fillRect(x - 1, y - 1, w, h);
+  // stripes: flying castes are banded dark, nest castes are banded soft
+  ctx.fillStyle = (job === 'forager' || job === 'guard') ? '#221a0d' : '#a8863c';
+  if (w === 3) { ctx.fillRect(x, y - 1, 1, 3); if (job === 'forager' || job === 'guard') ctx.fillRect(x + 1, y, 1, 1); }
+  else ctx.fillRect(x, y - 1, 1, 2);
+  // head carries the personality colour
+  ctx.fillStyle = P_HEAD[b.persona]; ctx.fillRect(x - 1, y - 1, 1, 1);
+  // load pellet / wax brick
+  if (b.load > 0) { ctx.fillStyle = b.cargo === 'pollen' ? '#e8963c' : '#ffd76a'; ctx.fillRect(x + 1, y + 1, 2, 2); }
+  if (job === 'builder' && b.flap < 4) { ctx.fillStyle = '#fff6e0'; ctx.fillRect(x - 2, y, 1, 1); }
+}
+
 function hexFill(x, y, r, col) {
   ctx.beginPath();
   for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i + Math.PI / 6, px = x + Math.cos(a) * r, py = y + Math.sin(a) * r; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
@@ -531,6 +901,7 @@ function ui() {
   $('seasonTxt').textContent = SEASON[S.season];
   $('popTxt').textContent = pop();
   $('wkTxt').textContent = S.workers.length;
+  $('grTxt').textContent = countGuards();
   $('nuTxt').textContent = countNurses();
   $('fgTxt').textContent = countForagers();
   $('bdTxt').textContent = countBrood();
@@ -538,13 +909,13 @@ function ui() {
   $('plTxt').textContent = Math.max(0, Math.round(S.pollen));
   $('cbTxt').textContent = S.comb.length;
   $('qName').textContent = ORDERS.queen;
-  $('qDoc').textContent = ORDERS.doctrine;
+  $('qDoc').textContent = S.haz ? '⚠ ' + S.haz.name : ORDERS.doctrine;
   $('qForage').textContent = Math.round(ORDERS.forageRatio * 100) + '%';
   $('qBrood').textContent = Math.round(ORDERS.broodPriority * 100) + '%';
   $('qRes').textContent = ORDERS.winterReserve;
   $('qSwarm').textContent = ORDERS.allowSwarm ? 'ALLOWED' : 'HOLD';
   $('qState').textContent = !S.queenAlive ? (S.queenCell ? 'REARING' : 'NONE')
-    : S.queenCell ? 'LAYING+CELL' : S.season === 3 ? 'CLUSTERED' : 'LAYING';
+    : S.queenCell ? 'LAYING+CELL' : 'LAYING';
 
   const bn = $('banner');
   if (S.bannerT > 0) { bn.textContent = S.banner; bn.classList.remove('hide'); }
@@ -567,6 +938,7 @@ function applyOrder(line) {
     case 'pause': S.paused = true; markPause(); break;
     case 'resume': case 'play': S.paused = false; markPause(); break;
     case 'reset': case 'new': initHive(); break;
+    case 'haz': case 'hazard': triggerHaz(p[1]); break;      // queen may summon weather (demo)
     case 'doctrine': ORDERS.doctrine = line.slice(line.indexOf(' ') + 1).toUpperCase(); break;
     default: log('unknown order: ' + p[0]); return;
   }
@@ -603,8 +975,9 @@ fetch('queen-orders.json').then(r => { if (!r.ok) throw 0; return r.json(); })
   .then(j => { Object.assign(ORDERS, j); log('Queen orders received from ' + ORDERS.queen); })
   .catch(() => { log('Running on built-in doctrine'); });
 
+buildBase();
 initHive();
-S.logs = ['Swarm settles · 14 workers, 6 cells drawn'];
+S.logs = ['Swarm settles in the hollow · 14 workers, 6 cells'];
 // ?start=NN → fast-forward N sim days (demos / screenshots)
 if (typeof location !== 'undefined') {
   const m = /[?&]start=(\d+)/.exec(location.search);
@@ -617,6 +990,8 @@ if (typeof location !== 'undefined') {
     }
     log('Colony fast-forwarded to day ' + Math.floor(S.day));
   }
+  const h = /[?&]haz=([a-z]+)/.exec(location.search);
+  if (h) { triggerHaz(h[1]); }
 }
 applyOrder('forage ' + ORDERS.forageRatio);
 markSpeed(); markPause();

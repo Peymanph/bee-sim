@@ -20,6 +20,10 @@ canvas{position:absolute;inset:0;width:960px;height:600px;
 #pnlCol .v{color:#eaf6ec;font-weight:bold}
 #pnlCol .v.hi{color:#ffd24a}
 #pnlCol .v.pl{color:#e8963c}
+#pnlCol .leg{display:flex;flex-wrap:wrap;gap:7px;margin-top:5px;
+ border-top:1px solid #1e4a2a;padding-top:4px}
+#pnlCol .leg span{font-size:9.5px;color:#8fd39f;display:flex;align-items:center;gap:3px}
+#pnlCol .leg i{width:7px;height:7px;display:inline-block;border:1px solid #0a1a10}
 #pnlQueen{bottom:10px;left:10px;width:270px}
 #pnlQueen .qtitle{font-size:13px;color:#ffd24a;letter-spacing:.1em;margin-bottom:4px}
 #pnlQueen .qtitle b{color:#fff}
@@ -40,16 +44,18 @@ button.on{background:#c6ff00;color:#071008;border-color:#c6ff00}
 #cmd:focus{border-color:#c6ff00}
 #cmd::placeholder{color:#4d7a59}
 
-#banner{position:absolute;top:27%;left:50%;transform:translate(-50%,-50%);
+#banner{position:absolute;top:13%;left:50%;transform:translate(-50%,-50%);
  background:rgba(16,58,30,.95);border:2px solid #c6ff00;color:#fff;
  font-size:19px;font-weight:bold;letter-spacing:.14em;padding:9px 24px;
  border-radius:0;text-align:center;box-shadow:0 0 0 3px #0a2412,0 8px 30px rgba(0,0,0,.6);
  transition:opacity .3s;pointer-events:none;text-shadow:0 2px 0 #000}
 #banner.hide{opacity:0}
 
-#log{position:absolute;top:78px;left:10px;max-width:430px;font-size:11.5px;
- color:#a9d9b5;line-height:1.6;text-shadow:0 1px 2px #000}
-#log div{opacity:.95}
+#log{position:absolute;top:78px;left:10px;max-width:440px;font-size:11.5px;
+ color:#bfe8cd;line-height:1.6;padding:5px 8px;
+ background:rgba(7,17,10,.62);border-left:2px solid #2f6b3c;
+ text-shadow:0 1px 2px #000}
+#log div{opacity:1}
 #log .new{color:#ffd24a}
 
 #over{position:absolute;inset:0;background:rgba(30,30,30,.88);display:flex;

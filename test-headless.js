@@ -7,7 +7,8 @@ const ctx2d = () => ({
   createLinearGradient: () => ({ addColorStop() {} }),
   createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
   putImageData() {}, drawImage() {}, fillRect() {}, clearRect() {},
-  beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, arc() {}, stroke() {}
+  beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, arc() {}, stroke() {},
+  save() {}, restore() {}, clip() {}, ellipse() {}
 });
 const el = () => ({
   textContent: '', innerHTML: '', value: '', dataset: {}, style: {},
@@ -38,6 +39,8 @@ globalThis.__snap = function () {
     pup: S.comb.filter(x=>x.kind==='pupa').length,
     cells: S.comb.length, honey: Math.max(0, Math.round(S.honey)),
     pollen: Math.max(0, Math.round(S.pollen)), drones: S.drones.length,
+    guards: countGuards(), haz: S.haz ? S.haz.kind : null,
+    bold: countPersona('bold'), timid: countPersona('timid'),
     queen: S.queenAlive, qcell: !!S.queenCell, over: S.over };
 };
 `, c);
