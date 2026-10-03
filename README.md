@@ -36,6 +36,7 @@ Built on real honey-bee biology rather than arbitrary game rules.
 | **Foraging triage** | If **both** stores are short the trips alternate nectar / pollen; otherwise cargo follows the deficit. A single-priority rule deadlocks one store against the other. |
 | **Requeening** | If the queen dies, workers select a larva < 1.6 d old and raise an emergency queen cell. Colony recovers in 10 days. |
 | **Seasons** | 30 days each, **and they are equal**: every season blooms (8 / 14 / 8 / 8 flowers), winter yields like spring, and the queen keeps laying through winter. Winter is harder only because of frost storms, not because it is empty. |
+| **Under siege** | During a raid the queen stops laying (honey gate 18 → 45) and the brood target drops to holding, but **a quarter of the mature bees keep foraging** — a colony that stops feeding its larvae for three days starves behind a winning fight. |
 | **Threats** | Varroa each autumn (−18 % workers), optional prime swarm, honey exhaustion → **NEST FAILED**. |
 
 ## Job and personality
@@ -77,7 +78,39 @@ particles and log line each:
 | `HEATWAVE` | summer | adults burn 1.6× honey, larvae eat 1.6× and develop 30 % slower |
 | `HORNET RAID` | autumn | losses fall from 17 % to 3 % as guards are added |
 | `FROST STORM` | winter | falling snow, 1.8× burn, foraging halted, pollen regrowth stops |
-| `BEAR ATTACK` | any | −22 % workers and 45 % of the comb torn out |
+
+### Raids — the colony fights back
+
+Three hazards are not weather, they are **invaders that walk up to the trunk**
+and are fought on screen:
+
+| Raid | Force | HP each | Window | On defeat |
+|---|---|---|---|---|
+| `HORNET RAID` | 3 hornets | 55 | 7 days | 12 % of workers |
+| `WASP SQUAD` | 4 wasps | 45 | 8 days | 12 % of workers |
+| `BEAR ATTACK` | 1 bear | 460 | 12 days | 18 % of workers **and** 35 % of the comb |
+
+What happens:
+
+1. **Mobilisation** — guards leave their post, and up to **16 mature bees**
+   become a militia. `bold` volunteers first, then `diligent`, then `social`
+   and `frugal`; **`timid` bees never fight**. A quarter of the mature bees are
+   held back to keep nectar coming in.
+2. **Sortie** — fighters leave by the fissure waypoint queue (`exitPath`) and
+   close on the attacker, wearing a dark helmet with a red crest so a defender
+   reads at a glance. After the fight they walk `homePath` back in rather than
+   crossing the bark.
+3. **Combat** — each defender deals 6.5 damage per day. The attacker strikes
+   back on a cooldown, and every defender can dodge the swing: `bold` 55 %,
+   `diligent` 40 %, `social`/`frugal` 30 %, `timid` 5 %. **The more bees in the
+   air, the less often the attacker gets a free swing** — cooldown scales with
+   the militia cloud around it, so a big colony genuinely overwhelms it.
+4. **Outcome** — kill them all and the banner reads `DEFENCE HELD`; run out of
+   time and it reads `NEST BREACHED` and the losses above are taken.
+
+Readouts while it lasts: the banner shows `· N FIGHTING · M LEFT`, the queen
+panel shows `⚔ <name> — N defenders`, each attacker carries a stamina bar, and
+combat sparks mark hits, dodges and deaths.
 
 ## Queen orders
 
@@ -105,7 +138,9 @@ hazard after the fast-forward. Both are used for demos and screenshots.
 - `test-headless.js` — runs ~525 sim days in Node with canvas stubs, asserts no crash
 
 ```sh
-node test-headless.js
+node test-headless.js   # ~525 sim days, asserts no collapse
+node test-raid.js        # summons hornets, wasps and a bear; each must be
+                         # repelled, the militia must stand down, no collapse
 ```
 
 The suite has been run across many seeds; all reach day 525 (five sim years)

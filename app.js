@@ -4,7 +4,9 @@
    Queen Hermes issues orders (queen-orders.json / command bar).
    Biology: real worker caste by age, nurse-fed larvae, separate pollen (protein)
    and honey (carbohydrate) stores, egg→larva→pupa timeline, emergency requeening.
-   Ecology: weather hazards (storm / drought / heatwave / hornets / frost / bear)
+   Ecology: weather hazards (storm / drought / heatwave / frost) plus real raids —
+   a hornet squad, a wasp army or a bear walks up to the trunk, the colony
+   mobilises its militia, fights it at the entrance and wins or loses.
    Personality: every bee is born bold, timid, diligent, frugal or social —
    it changes how she flies, eats, works and survives a disaster. */
 
@@ -82,7 +84,7 @@ const S = {
   queenAlive: true, queenCell: null,
   queenT: 0, slotIdx: 0, free: [], dirty: true,
   layT: 0, buildT: 0, starveT: 0, roleT: 0, miteYear: -1, swarmT: 0,
-  haz: null, hazCd: 24,
+  haz: null, hazCd: 24, raid: null,
   banner: null, bannerT: 0, logs: [], frame: 0
 };
 
@@ -291,11 +293,12 @@ const P_HEAD = { bold: '#ff8c1a', timid: '#7d7460', diligent: '#ffe14a', frugal:
 const P_SPEED = { bold: 1.18, timid: 0.88, diligent: 1.0, frugal: 0.95, social: 1.0 };
 const JOB_COL = {
   cleaner: '#fff3d6', nurse: '#ffe9a0', builder: '#e8d5a6',
-  tender: '#f0c040', forager: '#f6c515', guard: '#e0a010'
+  tender: '#f0c040', forager: '#f6c515', guard: '#e0a010', militia: '#ff8a2b'
 };
-const JOB_NAME = ['cleaner', 'nurse', 'builder', 'tender', 'forager', 'guard'];
+const JOB_NAME = ['cleaner', 'nurse', 'builder', 'tender', 'forager', 'guard', 'militia'];
 
 function jobOf(b) {
+  if (b.role === 'fight') return 'militia';
   if (b.role === 'guard') return 'guard';
   if (b.role === 'forage') return 'forager';
   if (b.age < 1) return 'cleaner';
@@ -366,8 +369,135 @@ const HAZ = {
   heatwave: { name: 'HEATWAVE', days: 5 },
   hornet: { name: 'HORNET RAID', days: 1.3 },
   frost: { name: 'FROST STORM', days: 5 },
-  bear: { name: 'BEAR ATTACK', days: 0.6 }
+  wasps: { name: 'WASP SQUAD', days: 8 },
+  bear: { name: 'BEAR ATTACK', days: 12 }
 };
+
+/* ---- raids ----------------------------------------------------------
+   A hornet squad, a wasp army or a bear does not just "resolve" — it shows
+   up on screen, the colony arms itself and fights it. Bold and diligent
+   bees volunteer first, timid ones hang back, and every defender can dodge.
+   Win fast and the entrance holds; lose the clock and they get inside. */
+const RAID = {
+  hornet: {
+    name: 'HORNET RAID', days: 7, count: 3, hp: 55, cool: 1.4, hits: 1, dps: 6.5,
+    sprite: 'hornet', spawn: { x: 256, y: 126 }, spread: { x: 18, y: 24 },
+    call: 'Hornets at the fissure — the colony arms itself'
+  },
+  wasps: {
+    name: 'WASP SQUAD', days: 8, count: 4, hp: 45, cool: 1.3, hits: 1, dps: 6.5,
+    sprite: 'hornet', spawn: { x: 258, y: 122 }, spread: { x: 24, y: 30 },
+    call: 'A squad of wasps masses outside the entrance'
+  },
+  bear: {
+    name: 'BEAR ATTACK', days: 12, count: 1, hp: 460, cool: 1.6, hits: 4, dps: 6.5,
+    sprite: 'bear', spawn: { x: 252, y: 140 }, spread: { x: 0, y: 0 },
+    call: 'A bear rears up against the trunk'
+  }
+};
+function startRaid(k) {
+  const c = RAID[k], mobs = [];
+  for (let i = 0; i < c.count; i++) {
+    const bx = c.spawn.x + (c.count > 1 ? ri(-c.spread.x, c.spread.x) : 0);
+    const by = c.spawn.y + (c.count > 1 ? ri(-c.spread.y, c.spread.y) : 0);
+    mobs.push({ id: i, bx: bx, by: by, x: bx, y: by, hp: c.hp, maxHp: c.hp, cool: 0.5 + rnd(), hit: 0 });
+  }
+  S.raid = { kind: k, name: c.name, days: c.days, mobs: mobs, kills: 0, lost: 0, sparks: [], seen: false };
+  log(c.call);
+}
+function nearestMob(b) {
+  if (!S.raid) return null;
+  let best = null, bd = 1e9;
+  for (const m of S.raid.mobs) { const d = Math.hypot(m.x - b.x, m.y - b.y); if (d < bd) { bd = d; best = m; } }
+  return best;
+}
+function spark(x, y, col) { if (S.raid) S.raid.sparks.push({ x: x, y: y, t: 0.6, col: col || '#ff6a4a' }); }
+
+function updateRaid(dt) {
+  const R = S.raid, c = RAID[R.kind];
+  R.days -= dt;
+  for (const s of R.sparks) s.t -= dt;
+  R.sparks = R.sparks.filter(s => s.t > 0);
+
+  // attacker: hovers (wasp) or lumbers against the bark (bear)
+  for (const m of R.mobs) {
+    const b = c.sprite === 'bear' ? 2 : 7;
+    m.x = m.bx + Math.sin(S.frame / 14 + m.id * 2) * b;
+    m.y = m.by + Math.cos(S.frame / 11 + m.id * 3) * (c.sprite === 'bear' ? 2 : 5);
+    m.cool -= dt; m.hit = Math.max(0, m.hit - dt);
+  }
+
+  // the militia closes in and lands hits
+  let engaged = 0;
+  for (const m of R.mobs) {
+    let n = 0;
+    for (const b of S.workers) {
+      if (b.role !== 'fight') continue;
+      if (Math.hypot(b.x - m.x, b.y - m.y) < 15) n++;
+    }
+    if (n > 0) {
+      engaged += n;
+      m.hp -= n * c.dps * dt;
+      m.hit = 0.12;
+      if (rnd() < dt * 8) spark(m.x + ri(-5, 5), m.y + ri(-5, 5), '#ffe08a');
+    }
+  }
+  if (engaged && !R.seen) { R.seen = true; log(engaged + ' defenders swarm the attackers'); }
+
+  // attacker strikes back: reads the swing and can be dodged
+  for (const m of R.mobs) {
+    if (m.hp <= 0 || m.cool > 0) continue;
+    const near = [];
+    let cloud = 0;
+    for (const b of S.workers) {
+      if (b.role !== 'fight') continue;
+      const d = Math.hypot(b.x - m.x, b.y - m.y);
+      if (d < 17) near.push(b);
+      if (d < 34) cloud++;                 // the swarm around it, not just on it
+    }
+    // the more bees in the air, the less often the attacker gets a free swing
+    m.cool = c.cool * (1 + Math.min(8, cloud) * 0.25);
+    if (!near.length) continue;
+    let hits = c.hits;
+    while (hits-- > 0 && near.length) {
+      const b = near.splice(ri(0, near.length - 1), 1)[0];
+      const dodge = b.persona === 'bold' ? 0.55
+        : b.persona === 'diligent' ? 0.40
+        : b.persona === 'timid' ? 0.05
+        : 0.30;
+      if (rnd() < dodge) { spark(b.x, b.y, '#8ff0ff'); continue; }
+      const j = S.workers.indexOf(b);
+      if (j >= 0) { S.workers.splice(j, 1); R.lost++; spark(b.x, b.y, '#ff4a3d'); }
+    }
+  }
+
+  // casualties on the attacker side
+  for (const m of R.mobs) if (m.hp <= 0) {
+    R.kills++; spark(m.x, m.y, '#ffd24a'); spark(m.x + 4, m.y - 3, '#ffd24a');
+  }
+  const alive = R.mobs.filter(m => m.hp > 0);
+  if (alive.length !== R.mobs.length) R.mobs = alive;
+  if (!R.mobs.length) { endRaid(true); return; }
+  if (R.days <= 0 || S.workers.length <= 4) endRaid(false);
+}
+
+function endRaid(won) {
+  const R = S.raid, c = RAID[R.kind];
+  S.raid = null; S.haz = null; S.hazCd = 16 + rnd() * 16;
+  // send the militia home through the fissure, never through the bark
+  for (const b of S.workers) if (b.role === 'fight') {
+    b.role = 'tend'; setPath(b, homePath(b)); b.rt = 1 + rnd() * 2;
+  }
+  if (won) {
+    setBanner('DEFENCE HELD', 4);
+    log('Defence held — ' + R.kills + ' attackers down, ' + R.lost + ' defenders lost');
+  } else {
+    setBanner('NEST BREACHED', 4.5);
+    if (c.sprite === 'bear') { killBees(0.18, false, 'The bear tore into the hollow'); destroyComb(0.35); }
+    else killBees(0.12, true, R.kills > 0 ? 'They broke through the entrance' : 'No defenders left standing');
+    log(R.kills + ' attackers repelled before they got through');
+  }
+}
 
 // bold bees read weather and stay home; timid ones get caught outside
 function killBees(pct, favorBold, msg) {
@@ -401,18 +531,12 @@ function destroyComb(pct) {
 function triggerHaz(k) {
   if (S.haz || S.over) return;
   const p = HAZ[k];
+  if (!p) { log('no such hazard: ' + k); return; }
   S.haz = { kind: k, name: p.name, days: p.days };
   setBanner(p.name, 4.5);
+  if (RAID[k]) { startRaid(k); return; }
   if (k === 'thunderstorm') {
     killBees(0.10, true, 'Gust front — foragers lost in the wind');
-  } else if (k === 'hornet') {
-    const g = countGuards();
-    const pct = Math.max(0.03, 0.17 - g * 0.03);
-    killBees(pct, true, g >= 3 ? 'Guards held the entrance (' + g + ' on watch)'
-      : 'Hornets broke through — not enough guards');
-  } else if (k === 'bear') {
-    killBees(0.22, false, 'A bear tore into the hollow');
-    destroyComb(0.45);
   } else if (k === 'drought') {
     log('Ground dried up — blossoms are giving nothing');
   } else if (k === 'heatwave') {
@@ -428,6 +552,7 @@ function rollHaz() {
   add('drought', s === 1 ? 4 : (s === 0 ? 1 : 0));
   add('heatwave', s === 1 ? 3 : (s === 2 ? 1 : 0));
   add('hornet', s === 2 ? 4 : (s === 1 ? 2 : 1));
+  add('wasps', s === 1 ? 3 : (s === 2 ? 3 : 1));
   add('frost', s === 3 ? 5 : 0);
   add('bear', 1);
   if (!pool.length || rnd() > 0.55) return;
@@ -446,7 +571,7 @@ function initHive() {
   S.slotIdx = 0; S.free = []; S.queenAlive = true; S.queenCell = null; S.queenT = 0;
   S.layT = 0; S.buildT = 0; S.starveT = 0; S.roleT = 0; S.miteYear = -1;
   S.swarmT = 0; S.logs = []; S.banner = null; S.bannerT = 0;
-  S.haz = null; S.hazCd = 24;
+  S.haz = null; S.hazCd = 24; S.raid = null;
   // the hollow a founding swarm moved into: a chamber low in the trunk
   disc(HIVE.x, HIVE.y, 34);
   slotRect(POKE.x - 8, 135, ENT.x + 4, 145);       // entrance fissure
@@ -540,7 +665,9 @@ function update(dt, ds) {
   S.year = Math.floor((S.day - 1) / 120) + 1;
 
   // ===================== HAZARDS =====================
-  if (S.haz) {
+  if (S.raid) {
+    updateRaid(dt);
+  } else if (S.haz) {
     S.haz.days -= dt;
     if (S.haz.days <= 0) { log(S.haz.name + ' has passed'); S.haz = null; S.hazCd = 16 + rnd() * 16; }
   } else {
@@ -621,9 +748,13 @@ function update(dt, ds) {
   // winter lays too — the colony stays equal to every other season,
   // it just refuses to breed into a shrinking honey reserve.
   const reserveGate = seas === 3 ? ORDERS.winterReserve * 0.30 : 0;
-  const targetBrood = Math.max(16, Math.floor(S.workers.length * (0.55 + ORDERS.broodPriority * 0.85)));
+  // under siege the queen holds off: every egg laid now is honey the
+  // defenders cannot afford while the forage crew is thin.
+  const siegeGate = S.raid ? 45 : 18;
+  const targetBrood = S.raid ? Math.min(16, countBrood())
+    : Math.max(16, Math.floor(S.workers.length * (0.55 + ORDERS.broodPriority * 0.85)));
   const canLay = S.queenAlive && !S.queenCell &&
-    S.honey > Math.max(18, reserveGate) && S.pollen > 6 &&
+    S.honey > Math.max(siegeGate, reserveGate) && S.pollen > 6 &&
     S.workers.length > 0 && effectiveNurses() >= 2;
   if (canLay) {
     const rate = LAYRATE[seas];
@@ -668,10 +799,24 @@ function update(dt, ds) {
       const gx = OUT.x - 8 + Math.sin(S.frame / 22 + b.gi) * 3;
       const gy = OUT.y + Math.cos(S.frame / 18 + b.gi) * 4;
       step(b, gx, gy, 9, ds);
+    } else if (b.role === 'fight') {
+      // sortie out through the fissure, then close on the attacker
+      if (b.path && b.path.length >= 2) stepPath(b, sp, ds);
+      else {
+        const m = nearestMob(b);
+        const tx = (m ? m.x : OUT.x) + Math.sin(S.frame / 7 + b.gi) * 6;
+        const ty = (m ? m.y : OUT.y) + Math.cos(S.frame / 6 + b.gi) * 6;
+        step(b, tx, ty, sp * 0.5, ds);
+      }
     } else if (b.role === 'tend') {
-      b.rt -= dt;
-      if (b.rt <= 0) pickAirTarget(b);
-      step(b, b.tx, b.ty, sp, ds);
+      // a returning fighter walks her waypoint queue home instead of
+      // beelining through the bark
+      if (b.path && b.path.length >= 2) stepPath(b, sp, ds);
+      else {
+        b.rt -= dt;
+        if (b.rt <= 0) pickAirTarget(b);
+        step(b, b.tx, b.ty, sp, ds);
+      }
     } else {
       // forager: walk the waypoint queue out through the fissure and back
       if (stepPath(b, sp, ds)) {
@@ -736,23 +881,58 @@ function update(dt, ds) {
 
 // age polyethism: young bees work inside, only mature bees fly.
 // bold bees volunteer as guards; timid ones refuse the gate.
+function countFighters() { let n = 0; for (const b of S.workers) if (b.role === 'fight') n++; return n; }
+
 function assignRoles() {
+  const raiding = !!S.raid;
   const eligible = S.workers.filter(b => b.age >= FORAGE_AGE).length;
-  // a small colony cannot afford two bees standing on the porch
-  const wantG = S.haz && S.haz.kind === 'hornet' ? 5 : eligible >= 14 ? 2 : eligible >= 6 ? 1 : 0;
+  // a small colony cannot afford two bees standing on the porch — and during
+  // a raid nobody stays on the porch, they all go out to fight.
+  const wantG = raiding ? 0
+    : S.haz && S.haz.kind === 'hornet' ? 5
+    : eligible >= 14 ? 2 : eligible >= 6 ? 1 : 0;
   let haveG = countGuards();
   for (const b of S.workers) {
     const canFly = b.age >= FORAGE_AGE;
     if (haveG < wantG && b.role !== 'guard' && canFly && b.persona !== 'timid') { b.role = 'guard'; b.load = 0; haveG++; }
-    else if ((haveG > wantG || !canFly) && b.role === 'guard') { b.role = 'tend'; b.rt = 0; pickAirTarget(b); haveG--; }
+    else if ((haveG > wantG || !canFly) && b.role === 'guard') {
+      b.role = 'tend';
+      if (b.x > 195) setPath(b, homePath(b)); else { b.path = []; pickAirTarget(b); }
+      b.rt = 1; haveG--;
+    }
   }
-  const want = Math.min(Math.round(eligible * ORDERS.forageRatio) - haveG, S.flowers.length * 3);
+
+  // ---- the militia: bold and diligent volunteer first, timid ones never do ----
+  // even under attack a few foragers keep flying — a colony that stops
+  // feeding the larvae for three days starves behind the winning fight.
+  const mature = S.workers.filter(b => b.age >= FORAGE_AGE);
+  const reserve = raiding ? Math.min(6, Math.floor(eligible * 0.25)) : 0;
+  const wantF = raiding ? Math.max(0, Math.min(mature.length - reserve, 16)) : 0;
+  let haveF = countFighters();
+  if (haveF < wantF) {
+    const pref = { bold: 0, diligent: 1, social: 2, frugal: 3, timid: 4 };
+    const pool = mature.filter(b => b.role !== 'fight').sort((a, c) => pref[a.persona] - pref[c.persona]);
+    for (const b of pool) {
+      if (haveF >= wantF) break;
+      b.role = 'fight'; b.load = 0; haveF++;
+      setPath(b, exitPath(b, { x: OUT.x, y: OUT.y }));
+    }
+  } else if (haveF > wantF) {
+    for (const b of S.workers) {
+      if (haveF <= wantF) break;
+      if (b.role !== 'fight') continue;
+      b.role = 'tend'; setPath(b, homePath(b)); b.rt = 1 + rnd() * 2; haveF--;
+    }
+  }
+
+  const want = Math.max(reserve,
+    Math.min(Math.round(eligible * ORDERS.forageRatio) - haveG - haveF, S.flowers.length * 3));
   let have = countForagers();
   for (const b of S.workers) {
-    const canFly = b.age >= FORAGE_AGE && b.role !== 'guard';
+    const canFly = b.age >= FORAGE_AGE && b.role !== 'guard' && b.role !== 'fight';
     const stormShy = stormActive() && b.persona === 'timid';
     if (have < want && b.role !== 'forage' && canFly && !stormShy) { b.role = 'forage'; b.trip = 0; nextTrip(b); have++; }
-    else if ((have > want || !canFly || stormShy) && b.role === 'forage') { b.role = 'tend'; b.load = 0; b.rt = 0; pickAirTarget(b); have--; }
+    else if ((have > want || !canFly || stormShy) && b.role === 'forage') { b.role = 'tend'; b.load = 0; b.rt = 0; b.path = []; pickAirTarget(b); have--; }
   }
 }
 function stormActive() { return S.haz && (S.haz.kind === 'thunderstorm' || S.haz.kind === 'frost'); }
@@ -803,7 +983,7 @@ function render() {
     else if (k === 'heatwave') ctx.fillStyle = 'rgba(255,120,60,.18)';
     else if (k === 'frost') ctx.fillStyle = 'rgba(180,214,255,.30)';
     else if (k === 'bear') ctx.fillStyle = 'rgba(120,40,40,.35)';
-    else if (k === 'hornet') ctx.fillStyle = 'rgba(150,90,20,.22)';
+    else if (k === 'hornet' || k === 'wasps') ctx.fillStyle = 'rgba(150,90,20,.22)';
     if (S.haz.kind === 'frost' && S.frame % 3 === 0) ctx.fillStyle = 'rgba(255,255,255,.7)';
     if (S.haz.kind === 'thunderstorm' && S.frame % 9 === 0) ctx.fillStyle = 'rgba(255,255,180,.65)';
     if (k === 'frost' || k === 'thunderstorm') {
@@ -849,11 +1029,22 @@ function render() {
     if (inner) { ctx.fillStyle = inner; ctx.fillRect(x - 1, y - 1, 2, 2); }
   }
 
+  // the attackers — drawn first so the militia swarms over them
+  if (S.raid) drawRaid();
+
   // drones
   for (const d of S.drones) { ctx.fillStyle = '#5a4530'; ctx.fillRect(Math.round(d.x) - 1, Math.round(d.y) - 1, 3, 3); }
 
   // workers — coloured by JOB, accented by PERSONALITY
   for (const b of S.workers) drawBee(b);
+
+  // combat sparks sit on top of everything
+  if (S.raid) for (const s of S.raid.sparks) {
+    ctx.fillStyle = s.col;
+    const q = s.t > 0.35 ? 2 : 1;
+    ctx.fillRect(Math.round(s.x), Math.round(s.y), q, q);
+    if (q === 2) ctx.fillRect(Math.round(s.x) + 2, Math.round(s.y) - 1, 1, 1);
+  }
 
   // queen
   if (S.queenAlive) {
@@ -862,6 +1053,61 @@ function render() {
     ctx.fillStyle = '#ffb02e'; ctx.fillRect(bx - 2, by - 3, 5, 7);
     ctx.fillStyle = '#7a4a08'; ctx.fillRect(bx - 2, by, 5, 1); ctx.fillRect(bx - 2, by + 2, 5, 1);
     ctx.fillStyle = '#ffe066'; ctx.fillRect(bx - 1, by - 4, 3, 1);
+  }
+}
+
+// ---------- raiders ----------
+function drawHornet(x, y, m) {
+  const flap = S.frame % 6 < 3;
+  ctx.fillStyle = '#dff2ff';
+  if (flap) { ctx.fillRect(x - 1, y - 5, 3, 2); ctx.fillRect(x + 2, y + 3, 3, 2); }
+  else { ctx.fillRect(x - 1, y + 3, 3, 2); ctx.fillRect(x + 2, y - 5, 3, 2); }
+  const hit = m.hit > 0;
+  // abdomen with dark bands, stinger toward the defenders
+  ctx.fillStyle = hit ? '#ffffff' : '#f0a51e';
+  ctx.fillRect(x - 2, y - 2, 8, 5);
+  ctx.fillStyle = hit ? '#ffffff' : '#231a0d';
+  ctx.fillRect(x + 1, y - 2, 2, 5);
+  ctx.fillRect(x + 4, y - 1, 1, 3);
+  // thorax + head facing the fissure
+  ctx.fillStyle = hit ? '#ffffff' : '#d9771a';
+  ctx.fillRect(x - 6, y - 2, 4, 5);
+  ctx.fillStyle = '#151109';
+  ctx.fillRect(x - 7, y - 2, 2, 5);
+  ctx.fillStyle = '#ff4a3d'; ctx.fillRect(x - 7, y - 1, 1, 1);
+  ctx.fillStyle = '#231a0d'; ctx.fillRect(x - 8, y, 2, 1);   // mandibles
+  ctx.fillRect(x - 9, y - 2, 2, 1);                          // antenna
+}
+function drawBear(x, y, m) {
+  const X = Math.round(x + Math.sin(S.frame / 13) * 2), Y = Math.round(y);
+  const c = m.hit > 0 ? '#b8825a' : '#6b4526';
+  const d = '#4a2f18';
+  ctx.fillStyle = c; ctx.fillRect(X - 6, Y - 6, 16, 14);
+  ctx.fillStyle = d; ctx.fillRect(X - 6, Y + 3, 16, 5);
+  // head, facing the trunk
+  ctx.fillStyle = c; ctx.fillRect(X - 13, Y - 10, 9, 9);
+  ctx.fillStyle = d; ctx.fillRect(X - 13, Y - 12, 3, 3); ctx.fillRect(X - 6, Y - 12, 3, 3);
+  ctx.fillStyle = '#a97c50'; ctx.fillRect(X - 16, Y - 6, 4, 4);
+  ctx.fillStyle = '#171009'; ctx.fillRect(X - 16, Y - 5, 2, 2);
+  ctx.fillStyle = '#120c06'; ctx.fillRect(X - 11, Y - 8, 2, 2);
+  // swiping paw
+  const claw = (S.frame % 24 < 12) ? -19 : -15;
+  ctx.fillStyle = '#f0ead8';
+  ctx.fillRect(X + claw, Y - 3, 3, 1); ctx.fillRect(X + claw, Y, 3, 1); ctx.fillRect(X + claw, Y + 3, 3, 1);
+  // legs
+  ctx.fillStyle = d; ctx.fillRect(X - 4, Y + 8, 4, 4); ctx.fillRect(X + 6, Y + 8, 4, 4);
+}
+function drawRaid() {
+  const R = S.raid, bear = RAID[R.kind].sprite === 'bear';
+  for (const m of R.mobs) {
+    const x = Math.round(m.x), y = Math.round(m.y);
+    if (bear) drawBear(x, y, m); else drawHornet(x, y, m);
+    // stamina bar, tight against the attacker's outline
+    const w = bear ? 30 : 18, p = Math.max(0, m.hp / m.maxHp);
+    const by = bear ? y - 17 : y - 9;
+    ctx.fillStyle = '#170d05'; ctx.fillRect(x - (w >> 1) - 1, by, w + 2, 5);
+    ctx.fillStyle = p > 0.5 ? '#c6ff00' : p > 0.25 ? '#ffd24a' : '#ff5a4a';
+    ctx.fillRect(x - (w >> 1), by + 1, Math.max(1, Math.round(w * p)), 3);
   }
 }
 
@@ -877,11 +1123,14 @@ function drawBee(b) {
   if (flick) { ctx.fillStyle = '#e9f7ff'; ctx.fillRect(x - 1, y - 2, 1, 1); ctx.fillRect(x + 1, y - 2, 1, 1); }
   ctx.fillStyle = body; ctx.fillRect(x - 1, y - 1, w, h);
   // stripes: flying castes are banded dark, nest castes are banded soft
-  ctx.fillStyle = (job === 'forager' || job === 'guard') ? '#221a0d' : '#a8863c';
-  if (w === 3) { ctx.fillRect(x, y - 1, 1, 3); if (job === 'forager' || job === 'guard') ctx.fillRect(x + 1, y, 1, 1); }
+  const flying = job === 'forager' || job === 'guard' || job === 'militia';
+  ctx.fillStyle = flying ? '#221a0d' : '#a8863c';
+  if (w === 3) { ctx.fillRect(x, y - 1, 1, 3); if (flying) ctx.fillRect(x + 1, y, 1, 1); }
   else ctx.fillRect(x, y - 1, 1, 2);
   // head carries the personality colour
   ctx.fillStyle = P_HEAD[b.persona]; ctx.fillRect(x - 1, y - 1, 1, 1);
+  // fighters helmet up: dark cap with a red crest, so a defender reads at a glance
+  if (job === 'militia') { ctx.fillStyle = '#241509'; ctx.fillRect(x - 1, y - 2, w, 1); ctx.fillStyle = '#ff3b2f'; ctx.fillRect(x, y - 2, 1, 1); }
   // load pellet / wax brick
   if (b.load > 0) { ctx.fillStyle = b.cargo === 'pollen' ? '#e8963c' : '#ffd76a'; ctx.fillRect(x + 1, y + 1, 2, 2); }
   if (job === 'builder' && b.flap < 4) { ctx.fillStyle = '#fff6e0'; ctx.fillRect(x - 2, y, 1, 1); }
@@ -909,7 +1158,8 @@ function ui() {
   $('plTxt').textContent = Math.max(0, Math.round(S.pollen));
   $('cbTxt').textContent = S.comb.length;
   $('qName').textContent = ORDERS.queen;
-  $('qDoc').textContent = S.haz ? '⚠ ' + S.haz.name : ORDERS.doctrine;
+  $('qDoc').textContent = S.raid ? '⚔ ' + S.raid.name + ' — ' + countFighters() + ' defenders'
+    : S.haz ? '⚠ ' + S.haz.name : ORDERS.doctrine;
   $('qForage').textContent = Math.round(ORDERS.forageRatio * 100) + '%';
   $('qBrood').textContent = Math.round(ORDERS.broodPriority * 100) + '%';
   $('qRes').textContent = ORDERS.winterReserve;
@@ -918,7 +1168,12 @@ function ui() {
     : S.queenCell ? 'LAYING+CELL' : 'LAYING';
 
   const bn = $('banner');
-  if (S.bannerT > 0) { bn.textContent = S.banner; bn.classList.remove('hide'); }
+  if (S.raid) {
+    const many = RAID[S.raid.kind].count > 1;
+    bn.textContent = S.raid.name + ' · ' + countFighters() + ' FIGHTING'
+      + (many ? ' · ' + S.raid.mobs.length + ' LEFT' : '');
+    bn.classList.remove('hide');
+  } else if (S.bannerT > 0) { bn.textContent = S.banner; bn.classList.remove('hide'); }
   else bn.classList.add('hide');
 
   $('log').innerHTML = S.logs.map((t, i) => '<div class="' + (i === 0 ? 'new' : '') + '">› ' + t + '</div>').join('');
@@ -938,7 +1193,9 @@ function applyOrder(line) {
     case 'pause': S.paused = true; markPause(); break;
     case 'resume': case 'play': S.paused = false; markPause(); break;
     case 'reset': case 'new': initHive(); break;
-    case 'haz': case 'hazard': triggerHaz(p[1]); break;      // queen may summon weather (demo)
+    case 'haz': case 'hazard':                              // queen may summon a threat (demo)
+      if (S.raid) { log('already fighting: ' + S.raid.name); break; }
+      S.haz = null; triggerHaz(p[1]); break;
     case 'doctrine': ORDERS.doctrine = line.slice(line.indexOf(' ') + 1).toUpperCase(); break;
     default: log('unknown order: ' + p[0]); return;
   }
@@ -990,8 +1247,10 @@ if (typeof location !== 'undefined') {
     }
     log('Colony fast-forwarded to day ' + Math.floor(S.day));
   }
+  const sp = /[?&]speed=(\d+)/.exec(location.search);
+  if (sp) { S.speed = Math.max(1, Math.min(10, +sp[1])); markSpeed(); }
   const h = /[?&]haz=([a-z]+)/.exec(location.search);
-  if (h) { triggerHaz(h[1]); }
+  if (h) { S.haz = null; S.raid = null; triggerHaz(h[1]); }   // demo hook overrides any rolled hazard
 }
 applyOrder('forage ' + ORDERS.forageRatio);
 markSpeed(); markPause();

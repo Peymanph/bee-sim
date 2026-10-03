@@ -46,7 +46,7 @@ button.on{background:#c6ff00;color:#071008;border-color:#c6ff00}
 
 #banner{position:absolute;top:9%;left:50%;transform:translate(-50%,-50%);
  background:rgba(16,58,30,.95);border:2px solid #c6ff00;color:#fff;
- font-size:19px;font-weight:bold;letter-spacing:.14em;padding:9px 24px;
+ font-size:17px;font-weight:bold;letter-spacing:.12em;padding:9px 22px;white-space:nowrap;
  border-radius:0;text-align:center;box-shadow:0 0 0 3px #0a2412,0 8px 30px rgba(0,0,0,.6);
  transition:opacity .3s;pointer-events:none;text-shadow:0 2px 0 #000}
 #banner.hide{opacity:0}
