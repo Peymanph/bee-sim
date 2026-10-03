@@ -293,7 +293,7 @@ const P_HEAD = { bold: '#ff8c1a', timid: '#7d7460', diligent: '#ffe14a', frugal:
 const P_SPEED = { bold: 1.18, timid: 0.88, diligent: 1.0, frugal: 0.95, social: 1.0 };
 const JOB_COL = {
   cleaner: '#fff3d6', nurse: '#ffe9a0', builder: '#e8d5a6',
-  tender: '#f0c040', forager: '#f6c515', guard: '#e0a010', militia: '#ff8a2b'
+  tender: '#f0c040', forager: '#f6c515', guard: '#e0a010', militia: '#ff3b2f'
 };
 const JOB_NAME = ['cleaner', 'nurse', 'builder', 'tender', 'forager', 'guard', 'militia'];
 
@@ -381,12 +381,12 @@ const HAZ = {
 const RAID = {
   hornet: {
     name: 'HORNET RAID', days: 7, count: 3, hp: 55, cool: 1.4, hits: 1, dps: 6.5,
-    sprite: 'hornet', spawn: { x: 256, y: 126 }, spread: { x: 18, y: 24 },
+    sprite: 'hornet', spawn: { x: 262, y: 126 }, spread: { x: 30, y: 24 },
     call: 'Hornets at the fissure — the colony arms itself'
   },
   wasps: {
     name: 'WASP SQUAD', days: 8, count: 4, hp: 45, cool: 1.3, hits: 1, dps: 6.5,
-    sprite: 'hornet', spawn: { x: 258, y: 122 }, spread: { x: 24, y: 30 },
+    sprite: 'hornet', spawn: { x: 264, y: 122 }, spread: { x: 30, y: 26 },
     call: 'A squad of wasps masses outside the entrance'
   },
   bear: {
@@ -398,11 +398,27 @@ const RAID = {
 function startRaid(k) {
   const c = RAID[k], mobs = [];
   for (let i = 0; i < c.count; i++) {
-    const bx = c.spawn.x + (c.count > 1 ? ri(-c.spread.x, c.spread.x) : 0);
-    const by = c.spawn.y + (c.count > 1 ? ri(-c.spread.y, c.spread.y) : 0);
+    // evenly spaced around an ellipse: random placement let two attackers
+    // stack into one unreadable blob
+    const a = (i / c.count) * 6.283;
+    const bx = c.spawn.x + (c.count > 1 ? Math.round(Math.cos(a) * c.spread.x) : 0);
+    const by = c.spawn.y + (c.count > 1 ? Math.round(Math.sin(a) * c.spread.y) : 0);
     mobs.push({ id: i, bx: bx, by: by, x: bx, y: by, hp: c.hp, maxHp: c.hp, cool: 0.5 + rnd(), hit: 0 });
   }
   S.raid = { kind: k, name: c.name, days: c.days, mobs: mobs, kills: 0, lost: 0, sparks: [], seen: false };
+  S.roleT = 0;                                  // mobilise on the next tick, not in 0.6 days
+  // anyone already at the gate — guards and bees on the outbound leg — is in
+  // contact the moment the attack lands. Bees inside still have to sortie out.
+  let contact = 0;
+  for (const b of S.workers) {
+    if (contact >= 8) break;
+    if (b.age < FORAGE_AGE || b.x < 195) continue;
+    const m = mobs[contact % mobs.length];
+    const a = rnd() * 6.28, r = 10 + rnd() * 6;
+    b.role = 'fight'; b.load = 0; b.path = [];
+    b.x = m.x + Math.cos(a) * r; b.y = m.y + Math.sin(a) * r;
+    contact++;
+  }
   log(c.call);
 }
 function nearestMob(b) {
@@ -433,12 +449,12 @@ function updateRaid(dt) {
     let n = 0;
     for (const b of S.workers) {
       if (b.role !== 'fight') continue;
-      if (Math.hypot(b.x - m.x, b.y - m.y) < 15) n++;
+      if (Math.hypot(b.x - m.x, b.y - m.y) < 20) n++;   // covers her ring radius
     }
     if (n > 0) {
       engaged += n;
       m.hp -= n * c.dps * dt;
-      m.hit = 0.12;
+      if (rnd() < dt * 3) m.hit = 0.07;          // short pulse, not a white body
       if (rnd() < dt * 8) spark(m.x + ri(-5, 5), m.y + ri(-5, 5), '#ffe08a');
     }
   }
@@ -452,8 +468,8 @@ function updateRaid(dt) {
     for (const b of S.workers) {
       if (b.role !== 'fight') continue;
       const d = Math.hypot(b.x - m.x, b.y - m.y);
-      if (d < 17) near.push(b);
-      if (d < 34) cloud++;                 // the swarm around it, not just on it
+      if (d < 22) near.push(b);
+      if (d < 44) cloud++;                 // the swarm around it, not just on it
     }
     // the more bees in the air, the less often the attacker gets a free swing
     m.cool = c.cool * (1 + Math.min(8, cloud) * 0.25);
@@ -800,13 +816,17 @@ function update(dt, ds) {
       const gy = OUT.y + Math.cos(S.frame / 18 + b.gi) * 4;
       step(b, gx, gy, 9, ds);
     } else if (b.role === 'fight') {
-      // sortie out through the fissure, then close on the attacker
-      if (b.path && b.path.length >= 2) stepPath(b, sp, ds);
+      // sortie out through the fissure, then close on the attacker —
+      // every bee takes her own ring around it so the swarm reads as a
+      // swarm instead of one clump stacked on the sprite
+      if (b.path && b.path.length >= 2) stepPath(b, sp * 1.5, ds);
       else {
         const m = nearestMob(b);
-        const tx = (m ? m.x : OUT.x) + Math.sin(S.frame / 7 + b.gi) * 6;
-        const ty = (m ? m.y : OUT.y) + Math.cos(S.frame / 6 + b.gi) * 6;
-        step(b, tx, ty, sp * 0.5, ds);
+        const ph = S.frame / 6 + b.gi;
+        const r = 9 + (b.gi % 7);                  // 9–16 px ring per bee
+        const tx = (m ? m.x : OUT.x) + Math.sin(ph) * r;
+        const ty = (m ? m.y : OUT.y) + Math.cos(ph) * r * 0.8;
+        step(b, tx, ty, sp * 0.55, ds);
       }
     } else if (b.role === 'tend') {
       // a returning fighter walks her waypoint queue home instead of
@@ -1064,13 +1084,13 @@ function drawHornet(x, y, m) {
   else { ctx.fillRect(x - 1, y + 3, 3, 2); ctx.fillRect(x + 2, y - 5, 3, 2); }
   const hit = m.hit > 0;
   // abdomen with dark bands, stinger toward the defenders
-  ctx.fillStyle = hit ? '#ffffff' : '#f0a51e';
+  ctx.fillStyle = hit ? '#ffe6b0' : '#f0a51e';
   ctx.fillRect(x - 2, y - 2, 8, 5);
-  ctx.fillStyle = hit ? '#ffffff' : '#231a0d';
+  ctx.fillStyle = hit ? '#8a6a30' : '#231a0d';
   ctx.fillRect(x + 1, y - 2, 2, 5);
   ctx.fillRect(x + 4, y - 1, 1, 3);
   // thorax + head facing the fissure
-  ctx.fillStyle = hit ? '#ffffff' : '#d9771a';
+  ctx.fillStyle = hit ? '#ffd694' : '#d9771a';
   ctx.fillRect(x - 6, y - 2, 4, 5);
   ctx.fillStyle = '#151109';
   ctx.fillRect(x - 7, y - 2, 2, 5);
@@ -1080,7 +1100,7 @@ function drawHornet(x, y, m) {
 }
 function drawBear(x, y, m) {
   const X = Math.round(x + Math.sin(S.frame / 13) * 2), Y = Math.round(y);
-  const c = m.hit > 0 ? '#b8825a' : '#6b4526';
+  const c = m.hit > 0 ? '#a97c50' : '#6b4526';
   const d = '#4a2f18';
   ctx.fillStyle = c; ctx.fillRect(X - 6, Y - 6, 16, 14);
   ctx.fillStyle = d; ctx.fillRect(X - 6, Y + 3, 16, 5);
@@ -1115,18 +1135,21 @@ function drawBee(b) {
   const x = Math.round(b.x), y = Math.round(b.y);
   const job = jobOf(b);
   const body = JOB_COL[job];
-  const small = b.persona === 'frugal';
-  const w = small ? 2 : 3, h = small ? 2 : 3;
+  const small = b.persona === 'frugal' && job !== 'militia';
+  const w = job === 'militia' ? 4 : (small ? 2 : 3), h = w;
   const indoor = job === 'cleaner' || job === 'nurse' || job === 'builder' || job === 'tender';
   // wings: foragers and guards beat hard, nest bees idle
   const flick = indoor ? b.flap < 3 : b.flap < 5;
   if (flick) { ctx.fillStyle = '#e9f7ff'; ctx.fillRect(x - 1, y - 2, 1, 1); ctx.fillRect(x + 1, y - 2, 1, 1); }
+  // a fighter carries a dark frame, so the red body never merges into the
+  // orange-and-black attacker she is standing on
+  if (job === 'militia') { ctx.fillStyle = '#160c04'; ctx.fillRect(x - 2, y - 2, w + 2, h + 2); }
   ctx.fillStyle = body; ctx.fillRect(x - 1, y - 1, w, h);
   // stripes: flying castes are banded dark, nest castes are banded soft
   const flying = job === 'forager' || job === 'guard' || job === 'militia';
   ctx.fillStyle = flying ? '#221a0d' : '#a8863c';
   if (w === 3) { ctx.fillRect(x, y - 1, 1, 3); if (flying) ctx.fillRect(x + 1, y, 1, 1); }
-  else ctx.fillRect(x, y - 1, 1, 2);
+  else ctx.fillRect(x, y - 1, 1, h);
   // head carries the personality colour
   ctx.fillStyle = P_HEAD[b.persona]; ctx.fillRect(x - 1, y - 1, 1, 1);
   // fighters helmet up: dark cap with a red crest, so a defender reads at a glance
