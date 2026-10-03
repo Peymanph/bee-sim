@@ -458,7 +458,7 @@ function updateRaid(dt) {
       if (rnd() < dt * 8) spark(m.x + ri(-5, 5), m.y + ri(-5, 5), '#ffe08a');
     }
   }
-  if (engaged && !R.seen) { R.seen = true; log(engaged + ' defenders swarm the attackers'); }
+  if (engaged && !R.seen) { R.seen = true; log('The defenders swarm the attackers'); }
 
   // attacker strikes back: reads the swing and can be dodged
   for (const m of R.mobs) {
